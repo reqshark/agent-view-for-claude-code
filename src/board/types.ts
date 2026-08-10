@@ -37,13 +37,29 @@ export interface TeamWorkflowRun {
   agentCount: number;
 }
 
+/** One observed inter-agent message — a native-mailbox delivery or a
+ *  SendMessage the lead's transcript recorded. */
+export interface TeamMessage {
+  from: string;
+  to?: string;
+  text: string;
+  ts: number;
+  /** "protocol" = structured team plumbing (shutdown requests, approvals). */
+  kind: "chat" | "protocol";
+  read?: boolean;
+}
+
 /** One active team: its lead session, roster, and shared task graph. */
 export interface Team {
   leadSessionId: string;
   leadLabel: string;
+  /** Native store directory name (~/.claude/teams/<teamName>), when matched. */
+  teamName?: string;
   members: TeamMember[];
   tasks: TeamTask[];
   workflowRuns: TeamWorkflowRun[];
+  /** Message-mesh timeline, oldest first (accumulated across mailbox prunes). */
+  messages: TeamMessage[];
 }
 
 /** A live snapshot of every active team (the cockpit switches between them). */
@@ -62,7 +78,7 @@ export interface TeamSnapshot {
 /** One board object the user selected to hand to an agent — the deixis
  *  primitive: "this episode / this commit / this note", not a paraphrase. */
 export interface BoardObjectRef {
-  kind: "exchange" | "requirement" | "note" | "plan" | "evidence" | "commit" | "machinery";
+  kind: "exchange" | "requirement" | "note" | "plan" | "evidence" | "commit" | "machinery" | "message";
   title: string;
   detail?: string;
   ts?: number;

@@ -93,6 +93,15 @@ export function humanizeTool(name: string, input: unknown): string {
     }
     case "AskUserQuestion":
       return "Asking you a question";
+    case "SendMessage": {
+      // Agent Teams / cross-session messaging. Observed inputs carry both
+      // alias pairs (to/recipient, message/content) — read either.
+      const to = oneLine(o.to || o.recipient, 24);
+      const body = oneLine(o.summary || o.message || o.content, 60);
+      return `Messaging ${to || "a teammate"}${body ? ": " + body : ""}`;
+    }
+    case "ListAgents":
+      return "Listing reachable agents";
     default: {
       const detail = oneLine(
         o.command || o.file_path || o.path || o.pattern || o.description || o.prompt || o.url || o.query,

@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as path from "path";
 import { randomBytes } from "crypto";
+import { claudeHome } from "../paths";
 import { AgentStore } from "../store";
 import { flattenFleet } from "../webview/provider";
 import { BoardStore } from "./store";
@@ -37,6 +39,8 @@ export class BoardPanel {
   private readonly disposables: vscode.Disposable[] = [];
   private teamsTimer?: NodeJS.Timeout;
   private boardTimer?: NodeJS.Timeout;
+  private teamsWatcher?: fs.FSWatcher;
+  private homeWatcher?: fs.FSWatcher;
   private selectedSessionId: string | null = null;
   /** lastActivity of the selected session at the time it was materialized —
    *  a store tick only re-materializes when the transcript actually moved. */
@@ -101,6 +105,35 @@ export class BoardPanel {
       this.disposables,
     );
     panel.onDidDispose(() => this.cleanup(), null, this.disposables);
+    this.watchNativeTeams();
+  }
+
+  /** The store's fs.watch covers ~/.claude/projects only; mailbox and task
+   *  changes live in ~/.claude/teams|tasks, so the cockpit needs its own
+   *  watcher (the 15s heartbeat is the fallback when watching fails). */
+  private watchNativeTeams(): void {
+    const teamsDir = path.join(claudeHome(), "teams");
+    try {
+      this.teamsWatcher = fs.watch(teamsDir, { recursive: true }, () => this.scheduleTeams());
+      return;
+    } catch {
+      /* teams dir doesn't exist yet — watch for it appearing */
+    }
+    try {
+      this.homeWatcher = fs.watch(claudeHome(), (_e, name) => {
+        if (name !== "teams") return;
+        try {
+          this.teamsWatcher = fs.watch(teamsDir, { recursive: true }, () => this.scheduleTeams());
+          this.homeWatcher?.close();
+          this.homeWatcher = undefined;
+          this.scheduleTeams();
+        } catch {
+          /* raced its deletion — the next event retries */
+        }
+      });
+    } catch {
+      /* no ~/.claude at all — heartbeat refresh covers it */
+    }
   }
 
   private onMessage(msg: BoardToExt): void {
@@ -226,6 +259,10 @@ export class BoardPanel {
 
   private cleanup(): void {
     BoardPanel.current = undefined;
+    this.teamsWatcher?.close();
+    this.teamsWatcher = undefined;
+    this.homeWatcher?.close();
+    this.homeWatcher = undefined;
     if (this.teamsTimer) {
       clearTimeout(this.teamsTimer);
       this.teamsTimer = undefined;

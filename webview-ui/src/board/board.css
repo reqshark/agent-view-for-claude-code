@@ -902,6 +902,58 @@ button.primary:hover {
   font-size: 11px;
   color: var(--vscode-descriptionForeground, #888);
 }
+/* --- Teams cockpit: message mesh timeline --- */
+.cockpit-mail {
+  border: 1px solid var(--vscode-panel-border, #3c3c3c);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.cockpit-mail-label {
+  display: block;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.cockpit-mail-list {
+  max-height: 132px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.mail-time {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888);
+  flex: none;
+}
+.mail-route {
+  font-weight: 600;
+  color: var(--vscode-charts-blue, #75beff);
+  flex: none;
+}
+.mail-text {
+  color: var(--vscode-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mail-row.protocol .mail-text,
+.mail-row.protocol .mail-route {
+  color: var(--vscode-descriptionForeground, #888);
+  font-style: italic;
+  font-weight: 400;
+}
+
 .cockpit-graph-scroll {
   flex: 1;
   overflow: auto;

@@ -13,15 +13,17 @@ VS Code and VS Code-based IDEs (Antigravity, Cursor, Windsurf, …).
 > of Anthropic, PBC, used here only to describe interoperability. You need your own
 > Claude Code installation and Claude subscription to use it.
 
-> Status: v0.7.0 — discovery, worktree spawning, live status, the React detail view,
+> Status: v0.8.0 — discovery, worktree spawning, live status, the React detail view,
 > desktop notifications, ambient "now doing X" status, **Agent Race** (best-of-N),
 > **Fan-out**, **live plan progress**, failure detection, **Review & Land**, a **Teams
-> cockpit**, **Unattended Fleet**, **Evidence Gates**, **Live presence**, and a
-> **Fleet Shift Report**.
-> New in 0.7.0 — the CaaC release: the **Session Board** (any session materialized
-> into episodes, plans, commits, and evidence instead of a scroll — it replaces the
-> Pinboard) and the **Scroll** (a clickable one-tick-per-event session minimap in the
-> Detail view, on the board, and in the Shift Report).
+> cockpit**, **Unattended Fleet**, **Evidence Gates**, **Live presence**, a
+> **Fleet Shift Report**, the **Session Board**, and the **Scroll**.
+> New in 0.8.0 — the Communication release: Claude Code's **session-to-session
+> messaging becomes visible** — the Teams cockpit reads the **native Agent Teams
+> store** (roster, shared task list, and a **message-mesh timeline** of who told
+> whom what), the Scroll and Session Board gain **agent-message events**, team
+> hook events narrate the lead's row live, and managed agents spawn with a stable
+> `--name` address when the CLI supports it. All of it read-only, no LLM calls.
 > Expect rough edges; issues and PRs welcome.
 
 ## Install
@@ -81,17 +83,24 @@ one-click spawning of parallel agents in clean worktrees.
   materialized-session design probe (Canvas as a Conversation); everything is parsed
   from the transcript with **no LLM calls**.
 - **The Scroll** — a session minimap: every conversational event as one tick, in
-  order — you (amber, widest), model prose, thinking, tool calls, results. It sits
-  above the Detail transcript (click a tick to jump), tops every Session Board
-  (click to jump to an episode), and gives each agent a shape line in the Fleet
-  Shift Report. A 3-hour, 999-event session reads at a glance — and the six amber
-  ticks show exactly where you steered it.
+  order — you (amber, widest), model prose, thinking, tool calls, **agent messages
+  (blue)**, results. It sits above the Detail transcript (click a tick to jump),
+  tops every Session Board (click to jump to an episode), and gives each agent a
+  shape line in the Fleet Shift Report. A 3-hour, 999-event session reads at a
+  glance — and the six amber ticks show exactly where you steered it.
 - **Teams cockpit** — a **Teams** mode on the Session Board that visualizes an active
   multi-agent run live and read-only: the **roster** of named teammates (with a `plan`
   badge for plan-approval, live status, and tokens) and the **shared task list rendered
   as a dependency graph** — a topological DAG with `owner` badges and a derived `blocked`
-  state, parsed from the lead's plan. Workflow fan-out runs show as chips, and it
-  auto-detects Claude Code's native Agent Teams store if it ever appears.
+  state. The task graph now reads **Claude Code's native Agent Teams store**
+  (`~/.claude/tasks`) when present — the TodoWrite parse stays as the fallback —
+  and workflow fan-out runs show as chips.
+- **Message mesh** — the cockpit's **who-told-whom timeline** of session-to-session
+  messaging: native mailbox deliveries (`~/.claude/teams/<team>/inboxes`) accumulated
+  even after Claude Code prunes them, merged with the lead's own `SendMessage` calls.
+  Protocol traffic (shutdown requests, approvals) renders muted. The Session Board
+  gets a **Messages lane** with the same traffic per episode — inbound coordinator
+  messages and task notifications no longer masquerade as human prompts.
 - **Spawn in isolated worktrees** — one-click **New Agent** creates a fresh git
   worktree + branch so parallel agents never clobber each other's files.
 - **Live status** — Claude Code hooks stream real-time events; transcript replay is

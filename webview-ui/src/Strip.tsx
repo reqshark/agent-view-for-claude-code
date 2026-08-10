@@ -3,7 +3,8 @@ import "./strip.css";
 
 // The Scroll: a session's every conversational event as one tick, in order.
 // Char classes come from the host (src/transcript.ts readEventStrip):
-// H you · T model prose · K thinking · E/B/R/D/S tool calls · r result · m meta
+// H you · T model prose · K thinking · E/B/R/D/S tool calls · M agent message
+// · r result · m meta
 
 const TICK_LABEL: Record<string, string> = {
   H: "you",
@@ -13,12 +14,14 @@ const TICK_LABEL: Record<string, string> = {
   B: "shell",
   R: "read",
   D: "todo update",
+  M: "agent message",
   S: "tool call",
   r: "tool result",
   m: "system",
 };
 
-/** Tool-call chars share one visual class; the rest are their own. */
+/** Tool-call chars share one visual class; agent messages ("M") and the rest
+ *  are their own — inter-agent traffic should read differently from work. */
 function tickClass(c: string): string {
   if (c === "E" || c === "B" || c === "R" || c === "D" || c === "S") return "u";
   return c;

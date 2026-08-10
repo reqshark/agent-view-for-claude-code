@@ -13,6 +13,11 @@ const PLAIN_EVENTS = [
   "SubagentStop",
   "SessionStart",
   "SessionEnd",
+  // Agent Teams events (2.1.x, experimental) — ignored by older CLIs, so
+  // installing them unconditionally is safe.
+  "TeammateIdle",
+  "TaskCreated",
+  "TaskCompleted",
 ];
 
 interface HookEntry {

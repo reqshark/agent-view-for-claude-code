@@ -187,6 +187,22 @@
   color: var(--vscode-descriptionForeground);
 }
 
+.msg {
+  width: 100%;
+  border-left: 3px solid var(--vscode-charts-blue, #75beff);
+  padding: 2px 8px;
+  line-height: 1.4;
+  color: var(--vscode-foreground);
+  word-break: break-word;
+}
+.msg .msg-route {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: var(--vscode-charts-blue, #75beff);
+}
+.msg.out { border-left-style: dashed; }
+
 .machine {
   width: 100%;
   font-family: var(--vscode-editor-font-family);

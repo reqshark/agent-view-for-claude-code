@@ -1147,6 +1147,20 @@ export function activate(context: vscode.ExtensionContext): void {
     const id = event?.session_id || event?.sessionId;
     if (!id) return;
     const name = event?.hook_event_name || event?.hookEventName;
+    // Agent Teams events: keep the lead's row narrating team activity. The
+    // liveAction change also ticks the store, which refreshes the cockpit.
+    if (name === "TeammateIdle" || name === "TaskCreated" || name === "TaskCompleted") {
+      const teammate = event?.agent_name || event?.agentName;
+      const task = String(event?.task_name || event?.taskName || "").slice(0, 60);
+      const phrase =
+        name === "TeammateIdle"
+          ? `Teammate ${teammate || "?"} is idle`
+          : name === "TaskCreated"
+            ? `Task created${task ? ": " + task : ""}`
+            : `Task done${task ? ": " + task : ""}`;
+      store.applyLiveAction(id, phrase);
+      return;
+    }
     if (name === "PreToolUse" && event?.tool_name) {
       store.applyLiveAction(id, humanizeTool(event.tool_name, event.tool_input));
     } else if (

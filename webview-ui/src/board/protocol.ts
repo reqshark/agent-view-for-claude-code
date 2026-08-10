@@ -32,12 +32,28 @@ export interface TeamWorkflowRun {
   agentCount: number;
 }
 
+/** One observed inter-agent message — a native-mailbox delivery or a
+ *  SendMessage the lead's transcript recorded. */
+export interface TeamMessage {
+  from: string;
+  to?: string;
+  text: string;
+  ts: number;
+  /** "protocol" = structured team plumbing (shutdown requests, approvals). */
+  kind: "chat" | "protocol";
+  read?: boolean;
+}
+
 export interface Team {
   leadSessionId: string;
   leadLabel: string;
+  /** Native store directory name (~/.claude/teams/<teamName>), when matched. */
+  teamName?: string;
   members: TeamMember[];
   tasks: TeamTask[];
   workflowRuns: TeamWorkflowRun[];
+  /** Message-mesh timeline, oldest first (accumulated across mailbox prunes). */
+  messages: TeamMessage[];
 }
 
 export interface TeamSnapshot {
@@ -72,6 +88,16 @@ export interface BoardNote {
   ts: number;
 }
 
+/** One inter-agent message: a SendMessage the session issued ("out") or a
+ *  coordinator/teammate/task message delivered into its transcript ("in"). */
+export interface BoardMessage {
+  dir: "out" | "in";
+  /** The other end — recipient for "out", sender for "in" (when known). */
+  peer?: string;
+  text: string;
+  ts: number;
+}
+
 export interface BoardMachinery {
   edits: number;
   shell: number;
@@ -93,6 +119,9 @@ export interface BoardEpisode {
   notesDropped: number;
   plan?: { items: BoardPlanItem[]; snapshots: number };
   evidence: string[];
+  /** Inter-agent traffic (Agent Teams / cross-session messaging). */
+  messages: BoardMessage[];
+  messagesDropped: number;
   machinery: BoardMachinery;
   commits: BoardCommit[];
 }
@@ -114,12 +143,14 @@ export interface SessionBoardData {
     prompts: number;
     words: number;
     commits: number;
+    /** Inter-agent messages (both directions). */
+    messages: number;
   };
 }
 
 /** One board object the user selected to hand to an agent. */
 export interface BoardObjectRef {
-  kind: "exchange" | "requirement" | "note" | "plan" | "evidence" | "commit" | "machinery";
+  kind: "exchange" | "requirement" | "note" | "plan" | "evidence" | "commit" | "machinery" | "message";
   title: string;
   detail?: string;
   ts?: number;

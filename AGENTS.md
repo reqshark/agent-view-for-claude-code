@@ -64,6 +64,9 @@ src/                       extension host
                            WebviewPanel), types.ts (protocol + legacy on-disk shapes),
                            store.ts (.agentview/board/ selection + inbox bridge)
   subagents.ts             discover child subagents of a session
+  teams/discover.ts        Agent Teams: teammate sidecars, native store readers
+                           (~/.claude/teams + ~/.claude/tasks, READ-ONLY), mailbox
+                           message accumulator, team snapshot for the cockpit
   types.ts                 shared domain types (AgentSession, AgentStatus, TokenUsage)
   paths.ts                 ~/.claude path helpers
   tree/agentsProvider.ts   native TreeDataProvider for the Agents view (mas.agents)
@@ -71,7 +74,8 @@ src/                       extension host
   webview/protocol.ts      host<->webview message types  (SEE "manual sync" below)
   hooks/server.ts          local HTTP server receiving Claude Code hook events (push status)
   hooks/installer.ts       install/remove hooks in ~/.claude/settings.json
-  orchestrator/            worktree.ts, spawn.ts, groups.ts, registry.ts, terminals.ts
+  orchestrator/            worktree.ts, spawn.ts, groups.ts, registry.ts, terminals.ts,
+                           version.ts (CLI version probe gating newer spawn flags)
                            — spawn managed agents in git worktrees; Agent Race; Fan-out
   features/                router.ts (Attention Router), mergeAdvisor.ts, conflicts.ts
                            (Conflict Radar), notifications.ts, insights.ts, consent.ts,
@@ -99,6 +103,13 @@ webview-ui/src/            React Detail UI
 2. **Session JSONL transcripts** (pull/replay, zero-config fallback) —
    `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, plus
    `<session-id>/subagents/**/agent-*.jsonl`.
+3. **Native Agent Teams store** (experimental, shifts often) —
+   `~/.claude/teams/<team>/` (config.json roster when present, `inboxes/*.json`
+   mailboxes) and `~/.claude/tasks/<team>/*.json` (shared task list). Read by
+   `src/teams/discover.ts` only, defensively, and **never written** — Claude Code
+   owns and rewrites these files. Observed mailbox entry shape (2.1.196):
+   `{ from, text, timestamp, msgV, msg_id, type, read }`, where `text` may be
+   JSON for protocol traffic (e.g. `shutdown_request`).
 
 ## Conventions you must follow
 

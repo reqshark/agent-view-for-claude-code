@@ -3,6 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { Registry } from "./registry";
 import { terminals } from "./terminals";
+import { claudeVersion, versionAtLeast, NAME_FLAG_MIN_VERSION } from "./version";
 import { isGitRepo, repoRoot, createWorktree } from "./worktree";
 
 export interface SpawnConfig {
@@ -48,9 +49,17 @@ function shquote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-function buildCommand(cfg: SpawnConfig, sessionId: string, model: string, task?: string): string {
+function buildCommand(
+  cfg: SpawnConfig,
+  sessionId: string,
+  model: string,
+  task?: string,
+  agentName?: string,
+): string {
   const parts = [cfg.claudePath, "--session-id", sessionId];
   if (model) parts.push("--model", model);
+  // Cross-session messaging address (gated: older CLIs abort on unknown flags).
+  if (agentName) parts.push("--name", shquote(agentName));
   // When unattended sets a permission mode we OWN the permission policy: drop any
   // extra flag that could defeat the safe "acceptEdits" mode (a stray
   // --dangerously-skip-permissions or a different --permission-mode would let Bash
@@ -99,13 +108,18 @@ export async function spawnAgent(
   // Point the agent at the repo-root board bridge so it can read the user's
   // Session Board selection (worktree agents can't derive it from cwd).
   const boardDir = path.join(root, ".agentview", "board");
+  // Name the session after its branch so it has a stable, human-readable
+  // address in ListAgents / SendMessage (cross-session messaging).
+  const agentName = versionAtLeast(await claudeVersion(cfg.claudePath), NAME_FLAG_MIN_VERSION)
+    ? branch.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 48)
+    : undefined;
   const terminal = vscode.window.createTerminal({
     name: `Claude Code ${branch}`,
     cwd: workdir,
     env: { AGENTVIEW_BOARD_DIR: boardDir },
   });
   terminal.show(true);
-  terminal.sendText(buildCommand(cfg, sessionId, model, req.task));
+  terminal.sendText(buildCommand(cfg, sessionId, model, req.task, agentName));
   terminals.register(sessionId, terminal);
 
   await registry.add({

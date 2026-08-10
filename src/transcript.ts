@@ -377,11 +377,47 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
   };
 }
 
+// ---- Inter-agent messages (Agent Teams / cross-session messaging) ----
+
+export interface AgentMessageIn {
+  /** Best-effort sender ("coordinator", a teammate name) — often unknown. */
+  from?: string;
+  text: string;
+}
+
+/**
+ * Detect a user-type line that is really inter-agent traffic delivered into
+ * the transcript — a coordinator/teammate message or a background-task
+ * notification — not the human typing. Patterns are the ones observed on
+ * real transcripts (Claude Code 2.1.x); extend as new delivery shapes appear.
+ * Keeping these out of `isHumanPrompt` stops them polluting the Scroll's
+ * human anchors and falsely splitting board episodes.
+ */
+export function parseAgentMessage(line: any): AgentMessageIn | undefined {
+  // No isMeta guard: coordinator deliveries arrive with isMeta=true — the
+  // text patterns below are the discriminator.
+  if (line?.type !== "user") return undefined;
+  const content = line.message?.content;
+  if (Array.isArray(content) && content.some((b: any) => b?.type === "tool_result")) return undefined;
+  const text = contentToText(content);
+  if (!text) return undefined;
+  if (/^\s*<task-notification>/i.test(text)) {
+    const m = /<summary>([\s\S]*?)<\/summary>/i.exec(text);
+    return { text: (m ? m[1] : "background task update").replace(/\s+/g, " ").trim() };
+  }
+  const coord = /^\s*The (?:coordinator|team lead|lead) sent a message[^\n]*\n/i.exec(text);
+  if (coord) {
+    const body = text.slice(coord[0].length).split("\n").find((l) => l.trim()) || "teammate message";
+    return { from: "coordinator", text: body.trim() };
+  }
+  return undefined;
+}
+
 // ---- The Scroll: one character per conversational event ----
 //
 // H you · T model prose · K thinking · E edit/write · B shell · R read
-// D todo update · S other tool · r tool result · m system/meta
-export type StripChar = "H" | "T" | "K" | "E" | "B" | "R" | "D" | "S" | "r" | "m";
+// D todo update · M agent message · S other tool · r tool result · m system/meta
+export type StripChar = "H" | "T" | "K" | "E" | "B" | "R" | "D" | "M" | "S" | "r" | "m";
 
 /** Above this many ticks a strip is downsampled (human ticks always survive). */
 const MAX_STRIP_TICKS = 4000;
@@ -400,22 +436,25 @@ function stripCharForTool(name: string): StripChar {
   if (name === "Bash") return "B";
   if (name === "Read") return "R";
   if (name === "TodoWrite") return "D";
+  if (name === "SendMessage") return "M";
   return "S";
 }
 
-/** True for a user line that is a real human prompt (not meta/result/wrapper). */
+/** True for a user line that is a real human prompt (not meta/result/wrapper,
+ *  and not an inter-agent message delivered as a user line). */
 export function isHumanPrompt(line: any): boolean {
   if (line?.type !== "user" || line.isMeta || line.isSidechain) return false;
   const content = line.message?.content;
   if (Array.isArray(content) && content.some((b: any) => b?.type === "tool_result")) return false;
   const text = contentToText(content);
-  return !!text && !isWrapperText(text);
+  return !!text && !isWrapperText(text) && parseAgentMessage(line) === undefined;
 }
 
 /** Classify one JSONL line into strip ticks (an assistant line can carry
  *  several content blocks, so it may emit more than one). */
 export function classifyLine(line: any): StripChar[] {
   if (line?.type === "user") {
+    if (parseAgentMessage(line) !== undefined) return ["M"];
     if (isHumanPrompt(line)) return ["H"];
     const content = line.message?.content;
     if (Array.isArray(content) && content.some((b: any) => b?.type === "tool_result")) return ["r"];
@@ -546,6 +585,13 @@ function describeToolInput(name: string, input: unknown): string {
         return `Q: ${q?.question ?? ""}${q?.multiSelect ? " (multi-select)" : ""}${opts ? "\n" + opts : ""}`;
       })
       .join("\n\n");
+  }
+
+  // SendMessage: show the route + body, not the raw duplicated-alias JSON.
+  if (name === "SendMessage") {
+    const to = [o.to, o.recipient].find((s) => typeof s === "string" && s);
+    const body = [o.message, o.content, o.summary].find((s) => typeof s === "string" && s);
+    return `${to ? "To " + to + ": " : ""}${body || ""}`.trim();
   }
 
   // High-signal single fields shown in full (no truncation).

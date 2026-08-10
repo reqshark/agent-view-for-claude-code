@@ -26,6 +26,12 @@ export function mapHookEvent(event: any): AgentStatus | undefined {
       return "idle";
     case "SessionEnd":
       return "done";
+    case "TeammateIdle":
+    case "TaskCreated":
+    case "TaskCompleted":
+      // Team events describe a teammate/task, not this session's own state —
+      // surfaced via onEvent (live phrase + cockpit refresh), never as status.
+      return undefined;
     default:
       return undefined;
   }

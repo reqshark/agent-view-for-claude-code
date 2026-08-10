@@ -3,6 +3,7 @@ import {
   classifyLine,
   contentToText,
   isHumanPrompt,
+  parseAgentMessage,
   readEventStrip,
   readParsedLines,
   tsOf,
@@ -35,6 +36,7 @@ const STALL_MS = 10 * 60_000;
 const MAX_REQUIREMENTS = 8;
 const MAX_NOTES = 5;
 const MAX_EVIDENCE = 6;
+const MAX_MESSAGES = 8;
 const MAX_SHELF = 24;
 
 export interface BoardCommit {
@@ -49,6 +51,16 @@ export interface BoardPlanItem {
 }
 
 export interface BoardNote {
+  text: string;
+  ts: number;
+}
+
+/** One inter-agent message: a SendMessage the session issued ("out") or a
+ *  coordinator/teammate/task message delivered into its transcript ("in"). */
+export interface BoardMessage {
+  dir: "out" | "in";
+  /** The other end — recipient for "out", sender for "in" (when known). */
+  peer?: string;
   text: string;
   ts: number;
 }
@@ -80,6 +92,9 @@ export interface BoardEpisode {
   notesDropped: number;
   plan?: { items: BoardPlanItem[]; snapshots: number };
   evidence: string[];
+  /** Inter-agent traffic (Agent Teams / cross-session messaging). */
+  messages: BoardMessage[];
+  messagesDropped: number;
   machinery: BoardMachinery;
   commits: BoardCommit[];
 }
@@ -103,6 +118,8 @@ export interface SessionBoardData {
     /** Human words across all prompts — the "343 words" number. */
     words: number;
     commits: number;
+    /** Inter-agent messages (both directions). */
+    messages: number;
   };
 }
 
@@ -121,6 +138,8 @@ function newEpisode(index: number, prompt: string, ts: number): BoardEpisode {
     notes: [],
     notesDropped: 0,
     evidence: [],
+    messages: [],
+    messagesDropped: 0,
     machinery: newMachinery(),
     commits: [],
   };
@@ -174,6 +193,14 @@ function pushNote(ep: BoardEpisode, text: string, ts: number): void {
   }
 }
 
+function pushMessage(ep: BoardEpisode, msg: BoardMessage): void {
+  ep.messages.push(msg);
+  if (ep.messages.length > MAX_MESSAGES) {
+    ep.messages.shift();
+    ep.messagesDropped++;
+  }
+}
+
 /** Project one session transcript into Session Board objects. */
 export function materializeSession(
   jsonlPath: string,
@@ -185,7 +212,7 @@ export function materializeSession(
   const episodes: BoardEpisode[] = [];
   const fileEdits = new Map<string, number>();
   const toolNameById = new Map<string, string>();
-  const totals = { events: 0, toolCalls: 0, edits: 0, prompts: 0, words: 0, commits: 0 };
+  const totals = { events: 0, toolCalls: 0, edits: 0, prompts: 0, words: 0, commits: 0, messages: 0 };
   let startTs = 0;
   let endTs = 0;
   let prevTs = 0;
@@ -221,6 +248,13 @@ export function materializeSession(
         }
       } else {
         const ep = current();
+        // Inter-agent traffic delivered as a user line (coordinator messages,
+        // task notifications) becomes a message object, not machinery.
+        const inbound = parseAgentMessage(line);
+        if (inbound) {
+          totals.messages++;
+          pushMessage(ep, { dir: "in", peer: inbound.from, text: inbound.text.slice(0, 160), ts });
+        }
         // Failures: surface only what nothing recovered from.
         const content = line.message?.content;
         if (Array.isArray(content)) {
@@ -294,6 +328,16 @@ export function materializeSession(
               }
             } else if (b.name === "Read") {
               ep.machinery.reads++;
+            } else if (b.name === "SendMessage") {
+              // Observed input carries both alias pairs — read either.
+              const to = [input.to, input.recipient].find(
+                (s: unknown): s is string => typeof s === "string" && s.length > 0,
+              );
+              const body = [input.summary, input.message, input.content].find(
+                (s: unknown): s is string => typeof s === "string" && s.length > 0,
+              );
+              totals.messages++;
+              pushMessage(ep, { dir: "out", peer: to, text: (body || "(message)").slice(0, 160), ts });
             } else {
               ep.machinery.other++;
             }

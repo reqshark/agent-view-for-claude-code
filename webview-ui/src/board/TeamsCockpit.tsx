@@ -65,6 +65,15 @@ function useLayout(tasks: TeamTask[]) {
 const EMPTY_TASKS: TeamTask[] = [];
 const EMPTY_TEAMS: Team[] = [];
 
+/** Newest messages shown in the mesh timeline (older ones scroll away). */
+const MAX_MAIL_ROWS = 60;
+
+function hm(ts: number): string {
+  if (!ts) return "--:--";
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
 function taskVisualStatus(t: TeamTask, byId: Map<string, TeamTask>): TeamTaskStatus | "blocked" {
   // Only a real, unfinished dependency blocks — an absent id neither blocks nor draws.
   if (t.status === "pending" && t.dependsOn.some((d) => byId.has(d) && byId.get(d)!.status !== "completed")) {
@@ -170,6 +179,32 @@ export function TeamsCockpit({
           </button>
         ))}
       </div>
+
+      {/* message mesh — who talked to whom, in order */}
+      {team.messages.length > 0 && (
+        <div className="cockpit-mail">
+          <span className="cockpit-mail-label">
+            messages · {team.messages.length}
+            {team.teamName ? ` · ${team.teamName}` : ""}
+          </span>
+          <div className="cockpit-mail-list">
+            {team.messages.slice(-MAX_MAIL_ROWS).map((m, i) => (
+              <div
+                key={i}
+                className={"mail-row" + (m.kind === "protocol" ? " protocol" : "")}
+                title={m.text}
+              >
+                <span className="mail-time">{hm(m.ts)}</span>
+                <span className="mail-route">
+                  {m.from}
+                  {m.to ? ` → ${m.to}` : ""}
+                </span>
+                <span className="mail-text">{m.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* task dependency graph */}
       <div className="cockpit-graph-scroll">

@@ -23,13 +23,15 @@ export interface ShiftRow {
 }
 
 /** Glyphs a markdown code span can carry: █ you · ¶ model prose · ▒ thinking
- *  · ▪ tool call · · result/system. Wide sessions downsample to fit. */
+ *  · ▪ tool call · ◆ agent message · · result/system. Wide sessions downsample
+ *  to fit. */
 const SHAPE_WIDTH = 100;
 export function stripGlyphs(seq: string, width = SHAPE_WIDTH): string {
   const glyph = (c: string): string => {
     if (c === "H") return "█";
     if (c === "T") return "¶";
     if (c === "K") return "▒";
+    if (c === "M") return "◆";
     if (c === "r" || c === "m") return "·";
     return "▪";
   };

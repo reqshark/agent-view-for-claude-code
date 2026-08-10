@@ -99,13 +99,22 @@ export function SessionBoard(props: {
   };
 
   const glance = zoom === "glance";
+  // Sessions without inter-agent traffic don't get an empty lane.
+  const hasMessages = board.episodes.some((e) => e.messages.length > 0 || e.messagesDropped > 0);
   const objectCount =
     board.episodes.length +
     board.totals.commits +
     (glance
       ? 0
       : board.episodes.reduce(
-          (s, e) => s + e.requirements.length + e.notes.length + e.evidence.length + (e.plan ? 1 : 0) + 1,
+          (s, e) =>
+            s +
+            e.requirements.length +
+            e.notes.length +
+            e.evidence.length +
+            e.messages.length +
+            (e.plan ? 1 : 0) +
+            1,
           0,
         ) + board.shelf.length);
 
@@ -119,6 +128,7 @@ export function SessionBoard(props: {
             {hm(board.startTs)}–{hm(board.endTs)} · {minutes(board.startTs, board.endTs)} ·{" "}
             {board.totals.events} events · {board.totals.prompts} prompts ({board.totals.words} words) ·{" "}
             {board.totals.edits} edits · {board.totals.commits} commits
+            {board.totals.messages > 0 ? ` · ${board.totals.messages} messages` : ""}
           </span>
         </div>
         <div className="zoomer" role="group" aria-label="Board zoom">
@@ -279,6 +289,38 @@ export function SessionBoard(props: {
               </div>
             ))}
           </div>
+
+          {/* inter-agent messages (only for sessions that have any) */}
+          {hasMessages && (
+            <div className="lane lane-fold" style={{ gridTemplateColumns: cols }}>
+              <div className="lane-label">Messages</div>
+              {board.episodes.map((ep) => (
+                <div className="cell" key={ep.index}>
+                  {ep.messagesDropped > 0 && <span className="dropped">+{ep.messagesDropped} earlier</span>}
+                  {ep.messages.map((m, i) =>
+                    obj(
+                      `msg:${ep.index}:${i}`,
+                      {
+                        kind: "message",
+                        title: `${m.dir === "out" ? "to" : "from"} ${m.peer || (m.dir === "out" ? "teammate" : "agent")}: ${m.text.slice(0, 80)}`,
+                        detail: m.text,
+                        ts: m.ts,
+                        episode: ep.index,
+                      },
+                      "msg" + (m.dir === "out" ? " out" : ""),
+                      <>
+                        <span className="msg-route">
+                          {m.dir === "out" ? "→ " : "← "}
+                          {m.peer || (m.dir === "out" ? "teammate" : "agent")} · {hm(m.ts)}
+                        </span>{" "}
+                        {m.text}
+                      </>,
+                    ),
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* machinery */}
           <div className="lane lane-fold" style={{ gridTemplateColumns: cols }}>

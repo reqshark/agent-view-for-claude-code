@@ -3,6 +3,49 @@
 All notable changes to **Agent View for Claude Code** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-08-10
+
+The Communication release: Claude Code's session-to-session messaging (Agent
+Teams mailboxes + the SendMessage plane) becomes visible. Everything here is
+read-only against `~/.claude` — Claude Code owns those stores; MAS only
+observes. Shapes were captured from a real team run (Claude Code 2.1.196) and
+all parsers stay defensive: the store is experimental and shifts often.
+
+### Added
+
+- **Native Agent Teams store readers.** `~/.claude/teams/<team>/` (roster from
+  `config.json` when the CLI writes one, mailbox inboxes always) and
+  `~/.claude/tasks/<team>/` (shared task list, tolerant of key drift) now feed
+  the Teams cockpit. When a native team matches a live session (roster-name
+  overlap), its task list **wins over the TodoWrite fallback** and the source
+  chip flips to `native store`; unmatched-but-fresh native teams still surface
+  as store-only entries. The cockpit updates live via its own watcher on
+  `~/.claude/teams` (the projects watcher never covered it).
+- **Message mesh timeline.** The Teams cockpit gains a who-talked-to-whom
+  timeline: mailbox deliveries (accumulated in memory across Claude Code's
+  pruning — messages survive being consumed) merged with the lead's own
+  `SendMessage` calls from its transcript. Structured protocol traffic
+  (shutdown requests, approvals) renders muted and labeled.
+- **Messages in every projection surface.** `SendMessage` humanizes to
+  "Messaging scout: …" in the tree/detail; the Scroll gets a blue
+  **agent-message tick** (`◆` in the Shift Report glyph line); the Session
+  Board gets a **Messages lane** — outbound sends and inbound
+  coordinator/task-notification deliveries as selectable, sendable objects,
+  with a messages count in the header.
+- **Inbound traffic no longer masquerades as you.** Coordinator messages and
+  background-task notifications arrive in transcripts as user-type lines;
+  they previously counted as human prompts — polluting the Scroll's amber
+  anchors and falsely splitting board episodes. They now classify as
+  agent-message events.
+- **Team hook events.** `TeammateIdle`, `TaskCreated`, `TaskCompleted` are
+  installed with the MAS hooks (harmless on older CLIs) and narrate the lead's
+  row live ("Teammate scout is idle", "Task done: alpha") — each also ticks
+  the cockpit refresh. They never override session status.
+- **Addressable spawns.** Managed agents get `--name <branch>` when the
+  installed CLI supports it (2.1.224+, version-probed and cached — older CLIs
+  abort on unknown flags, so the flag is omitted rather than risked), giving
+  them stable, human-readable addresses in `ListAgents`/`SendMessage`.
+
 ## [0.7.0] — 2026-07-16
 
 The CaaC release: a session is a workspace, not a scroll. Two new surfaces —
