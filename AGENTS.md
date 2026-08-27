@@ -67,12 +67,24 @@ src/                       extension host
   teams/discover.ts        Agent Teams: teammate sidecars, native store readers
                            (~/.claude/teams + ~/.claude/tasks, READ-ONLY), mailbox
                            message accumulator, team snapshot for the cockpit
+  triage/                  the Triage inbox: types.ts (domain + protocol),
+                           text.ts (rules normalize + lexical similarity, PURE),
+                           judge.ts (Claude adjudicates "same question?" and
+                           "does this decision answer it?"; text.ts shortlists),
+                           intake.ts (questions from hooks/transcript/conflicts),
+                           engine.ts (normalize -> dedup -> lookup -> route,
+                           auto-answer policy, circuit breaker), store.ts
+                           (.agentview/triage/ decision log + metrics),
+                           hold.ts (parked blocking-hook responses),
+                           panel.ts (host side of the mas.triage webview)
   types.ts                 shared domain types (AgentSession, AgentStatus, TokenUsage)
   paths.ts                 ~/.claude path helpers
   tree/agentsProvider.ts   native TreeDataProvider for the Agents view (mas.agents)
   webview/provider.ts      DetailViewProvider — host side of the Detail webview (mas.detail)
   webview/protocol.ts      host<->webview message types  (SEE "manual sync" below)
-  hooks/server.ts          local HTTP server receiving Claude Code hook events (push status)
+  hooks/server.ts          local HTTP server receiving Claude Code hook events (push
+                           status) on /mas-hook, plus Triage's /mas-triage channel that
+                           HOLDS its response open until a human answers
   hooks/installer.ts       install/remove hooks in ~/.claude/settings.json
   orchestrator/            worktree.ts, spawn.ts, groups.ts, registry.ts, terminals.ts,
                            version.ts (CLI version probe gating newer spawn flags)
@@ -94,7 +106,21 @@ webview-ui/src/            React Detail UI
   board/                   Session Board entry: BoardApp.tsx (fleet list + frame),
                            SessionBoard.tsx (lanes x episodes), TeamsCockpit.tsx,
                            protocol.ts (MIRROR of src/board/types.ts + materialize shapes)
+  triage/                  Triage entry: TriageApp.tsx (Inbox / Auto / Decisions tabs),
+                           protocol.ts (MIRROR of the protocol half of
+                           src/triage/types.ts), api.ts, triage.css
 ```
+
+### The three sidebar views
+
+`package.json` contributes **mas.agents** (tree), **mas.triage** (webview), and
+**mas.detail** (webview) in that order, each with `"initialSize": 1` so the sidebar
+opens as equal thirds. Adding or reordering a view here changes that layout — keep the
+sizes equal unless you mean to change it.
+
+`webview-ui/` has **three** Vite HTML entry points — `index.html` (Detail),
+`triage.html` (Triage), `board.html` (Session Board). A new panel needs an entry in
+`vite.config.ts` as well as its own `.html`.
 
 ### Data sources (fidelity order)
 
@@ -103,7 +129,15 @@ webview-ui/src/            React Detail UI
 2. **Session JSONL transcripts** (pull/replay, zero-config fallback) —
    `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, plus
    `<session-id>/subagents/**/agent-*.jsonl`.
-3. **Native Agent Teams store** (experimental, shifts often) —
+3. **Triage's Hold channel** (blocking, opt-in) — with `mas.triage.hold.enabled`, a
+   second `PreToolUse` hook matched to `AskUserQuestion` POSTs to `/mas-triage` and
+   **keeps its stdout**; the server holds the response until a human answers, then
+   replies with `{hookSpecificOutput:{permissionDecision:"deny",permissionDecisionReason:
+   <answer>}}`, which Claude Code feeds to the model as the tool result. **Every failure
+   path must print nothing and exit 0** (no server, port taken, hold expired) — that is a
+   no-op hook and Claude Code prompts as usual. Never make a hold unbounded: the hook
+   entry carries an explicit `timeout` (seconds) and the curl an `-m` just under it.
+4. **Native Agent Teams store** (experimental, shifts often) —
    `~/.claude/teams/<team>/` (config.json roster when present, `inboxes/*.json`
    mailboxes) and `~/.claude/tasks/<team>/*.json` (shared task list). Read by
    `src/teams/discover.ts` only, defensively, and **never written** — Claude Code
@@ -114,12 +148,14 @@ webview-ui/src/            React Detail UI
 ## Conventions you must follow
 
 - **Protocol files are kept in MANUAL sync** — `src/webview/protocol.ts` mirrors
-  `webview-ui/src/protocol.ts` (Detail panel), and `src/board/types.ts` +
+  `webview-ui/src/protocol.ts` (Detail panel), `src/board/types.ts` +
   `src/board/materialize.ts` shapes mirror `webview-ui/src/board/protocol.ts`
-  (Session Board). They live under separate tsconfig roots, so there is no shared
-  import. **Any change to a message shape (`ExtToWeb` / `WebToExt` / `ExtToBoard` /
-  `BoardToExt` / `TranscriptMessage` / `SessionBoardData` / …) must be edited in BOTH
-  places**, or the panel silently breaks at runtime.
+  (Session Board), and the protocol half of `src/triage/types.ts` (everything below the
+  `// --- protocol --` banner) mirrors `webview-ui/src/triage/protocol.ts` (Triage).
+  They live under separate tsconfig roots, so there is no shared import. **Any change to
+  a message shape (`ExtToWeb` / `WebToExt` / `ExtToBoard` / `BoardToExt` / `ExtToTriage`
+  / `TriageToExt` / `TranscriptMessage` / `SessionBoardData` / `TriageState` / …) must be
+  edited in BOTH places**, or the panel silently breaks at runtime.
 - **`vscode` is host-only and external.** Never import it from `webview-ui/**`, and avoid
   pulling it into modules you want to run outside the host. The webview communicates only
   via `postMessage` through `vscodeApi.ts`.
@@ -145,7 +181,25 @@ webview-ui/src/            React Detail UI
   auto-delete; keep it that way.
 - The **AI helpers** (Attention Router, Merge Advisor, Conflict Radar) are **off by default
   and consent-gated**, and call `claude -p` (consumes the user's Claude subscription). Keep
-  them opt-in.
+  them opt-in. **Triage is the one exception**: `mas.triage.ai.enabled` defaults **on**,
+  because judging "are these the same question?" is the whole feature and word overlap
+  cannot do it. It is still behind the same one-time consent modal, so nothing runs until
+  the user agrees, and it degrades to `text.ts`'s lexical matching when off, declined, or
+  unreachable — every AI path in `engine.ts` has that fallback and must keep it.
+- **The model judges content; the engine judges scope.** `scopeCovers()` (repo / branch /
+  pathGlob / session), expiry and revocation are hard deterministic filters applied
+  *before* any call, and the prompts are deliberately not told the scope — handing it over
+  just invites the model to re-litigate a check that already passed, which it gets wrong.
+  Keep that split.
+- **Triage answers on the human's behalf.** Keep every guard that makes that safe: a
+  `permission` question only ever reuses a decision the human made on a permission
+  question, `conflict` questions are never auto-answered, an auto-answer always leaves a
+  revocable record, and the error-rate breaker demotes auto-answer to dry run on its own.
+  Widening any of these is a product decision, not a refactor.
+- **`~/.claude/settings.json` belongs to the user.** Triage's Hold hook lives there, so
+  flipping `mas.triage.hold.enabled` only *offers* to rewrite the hooks — it must never
+  write there unprompted. `installHooks` still backs the file up before its first
+  mutation, and `removeHooks` still leaves non-MAS hooks alone.
 
 ## Commits, PRs, releases
 

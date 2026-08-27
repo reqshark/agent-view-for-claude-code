@@ -3,7 +3,7 @@
 src/**
 webview-ui/src/**
 webview-ui/node_modules/**
-webview-ui/index.html
+webview-ui/*.html
 webview-ui/*.json
 webview-ui/*.ts
 node_modules/**

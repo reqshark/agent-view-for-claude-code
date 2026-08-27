@@ -194,6 +194,32 @@ export async function reviewDiffStat(worktreePath: string, base: string): Promis
 
 /** Contents of a file at a ref (empty string if it didn't exist there, or if
  *  the ref is unknown — never fall back to the index/`:file` form). */
+/**
+ * Lines added+removed under `pathGlob` since `sinceCommit`. Triage uses it as
+ * the "these files moved on" staleness signal for a scoped decision. Returns
+ * -1 when the range can't be resolved (the commit was rewritten or gc'd).
+ */
+export async function changedLineCount(
+  cwd: string,
+  sinceCommit: string,
+  pathGlob?: string,
+): Promise<number> {
+  const args = ["diff", "--numstat", `${sinceCommit}..HEAD`];
+  if (pathGlob) args.push("--", pathGlob);
+  try {
+    const out = await git(args, cwd);
+    let total = 0;
+    for (const line of out.split("\n")) {
+      const [add, del] = line.trim().split(/\s+/);
+      // "-" in either column means a binary file: no line count to add.
+      total += (Number(add) || 0) + (Number(del) || 0);
+    }
+    return total;
+  } catch {
+    return -1;
+  }
+}
+
 export async function showFileAtRef(
   worktreePath: string,
   ref: string,

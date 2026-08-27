@@ -22,6 +22,7 @@ import {
   defaultRemote,
   pushBranch,
   remoteWebUrl,
+  changedLineCount,
 } from "./orchestrator/worktree";
 import * as path from "path";
 import { execFile } from "child_process";
@@ -35,7 +36,11 @@ import { AgentsProvider } from "./tree/agentsProvider";
 import { DetailViewProvider, WebviewHandlers } from "./webview/provider";
 import { RaceGroup, RaceCandidate } from "./webview/protocol";
 import { HookServer } from "./hooks/server";
-import { installHooks, removeHooks, hooksInstalled } from "./hooks/installer";
+import { installHooks, removeHooks, hooksInstalled, holdHookInstalled } from "./hooks/installer";
+import { TriageEngine, TriageConfig } from "./triage/engine";
+import { TriageStore } from "./triage/store";
+import { TriageViewProvider } from "./triage/panel";
+import { AnswerExpiry, AnswerScope } from "./triage/types";
 import { InsightsController } from "./features/insights";
 import { requireLlmConsent, hasLlmConsent } from "./features/consent";
 import { runMergeAdvisor } from "./features/mergeAdvisor";
@@ -71,6 +76,25 @@ function spawnConfig(): SpawnConfig {
     worktreeRoot: c.get<string>("worktreeRoot", ".mas/worktrees"),
     spawnExtraFlags: c.get<string[]>("spawnExtraFlags", []),
     permissionMode: unattended && acceptEdits ? "acceptEdits" : undefined,
+  };
+}
+
+function triageConfig(): TriageConfig {
+  const c = cfg();
+  return {
+    enabled: c.get<boolean>("triage.enabled", true),
+    dedupThreshold: c.get<number>("triage.dedup.threshold", 0.7),
+    lookupThreshold: c.get<number>("triage.lookup.threshold", 0.8),
+    autoAnswerEnabled: c.get<boolean>("triage.autoAnswer.enabled", true),
+    dryRun: c.get<boolean>("triage.autoAnswer.dryRun", false),
+    ai: c.get<boolean>("triage.ai.enabled", true),
+    aiModel: c.get<string>("triage.ai.model", "claude-haiku-4-5"),
+    claudePath: c.get<string>("claudePath", "claude"),
+    conflictDetect: c.get<boolean>("triage.conflict.detect", true),
+    defaultScope: c.get<AnswerScope>("triage.defaultScope", "repo"),
+    defaultExpiry: c.get<AnswerExpiry>("triage.defaultExpiry", "forever"),
+    holdEnabled: c.get<boolean>("triage.hold.enabled", false),
+    holdTimeoutSeconds: c.get<number>("triage.hold.timeoutSeconds", 300),
   };
 }
 
@@ -122,6 +146,13 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration("mas.review.ghPath")) ghAvailableCache = undefined;
+      if (e.affectsConfiguration("mas.triage.hold.timeoutSeconds")) void offerHookUpdate(true);
+      else if (
+        e.affectsConfiguration("mas.triage.hold.enabled") ||
+        e.affectsConfiguration("mas.triage.enabled")
+      ) {
+        void offerHookUpdate();
+      }
       if (e.affectsConfiguration("mas.unattended") || e.affectsConfiguration("mas.statusBar.enabled")) {
         vscode.commands.executeCommand("setContext", "mas.unattended", unattendedConfig().enabled);
         updatePulse();
@@ -775,6 +806,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     reviewBaseCache.delete(sessionId);
+    triage.holds.releaseSession(sessionId);
     await registry.remove(sessionId);
     store.refresh();
     vscode.window.showInformationMessage(`Agent View: removed worktree for ${m.branch} (branch kept).`);
@@ -988,6 +1020,140 @@ export function activate(context: vscode.ExtensionContext): void {
     evidenceCtl.onDidChange(() => detail.notifyReviewDataChanged()),
   );
 
+  // --- Triage (compress N sessions' questions down to the distinct ones) ---
+  // The Decision Log lives in the workspace so it travels with the repo; with no
+  // folder open it falls back to global storage rather than writing anywhere odd.
+  const triageStore = new TriageStore(
+    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || context.globalStorageUri.fsPath,
+  );
+  // The Decision Log partitions by repo root, so the key has to be the SAME
+  // string every time a session asks. Managed agents know theirs; for the rest
+  // we warm a cache off the store tick and fall back to the cwd until it lands.
+  const repoRootCache = new Map<string, string>();
+  const repoRootPending = new Set<string>();
+  function repoRootFor(a: AgentSession): string {
+    const managed = registry.get(a.sessionId);
+    if (managed?.repoRoot) return managed.repoRoot;
+    const cached = repoRootCache.get(a.cwd);
+    if (cached) return cached;
+    if (!repoRootPending.has(a.cwd)) {
+      repoRootPending.add(a.cwd);
+      void repoRoot(a.cwd)
+        .then((root) => repoRootCache.set(a.cwd, root || a.cwd))
+        .catch(() => repoRootCache.set(a.cwd, a.cwd))
+        .finally(() => repoRootPending.delete(a.cwd));
+    }
+    return a.cwd;
+  }
+  context.subscriptions.push(
+    store.onDidChange(() => {
+      for (const a of store.list()) repoRootFor(a); // warm before anyone asks
+    }),
+  );
+
+  const triage = new TriageEngine(store, triageStore, triageConfig, {
+    dispatchToTerminal: (id, answer) => terminals.sendText(id, answer),
+    handoff: (targets, answer) => {
+      // No terminal we own (sessions started outside Agent View): put the answer
+      // where the human can paste it rather than dropping it on the floor.
+      void vscode.env.clipboard.writeText(answer);
+      const who =
+        targets.length === 1
+          ? `${targets[0].label}'s terminal`
+          : `${targets.length} agents' terminals`;
+      void vscode.window
+        .showInformationMessage(`Agent View: answer copied — paste it into ${who}.`, "Show agent")
+        .then((pick) => {
+          if (pick === "Show agent") {
+            vscode.commands.executeCommand("mas.detail.focus");
+            detail.select(targets[0].sessionId);
+          }
+        });
+    },
+    repoRoot: repoRootFor,
+    headCommit: (repo) => headCommit(repo).catch(() => ""),
+    churn: (repo, since, glob) => changedLineCount(repo, since, glob),
+    hooksInstalled,
+    notify: (msg) => void vscode.window.showWarningMessage(msg),
+    llmConsent: () => requireLlmConsent(context),
+  });
+  triage.start();
+  context.subscriptions.push({ dispose: () => triage.dispose() });
+
+  const triageView = new TriageViewProvider(context.extensionUri, triage, {
+    focusAgent: (id) => {
+      vscode.commands.executeCommand("mas.detail.focus");
+      detail.select(id);
+    },
+    setDryRun: async (on) => {
+      const target = vscode.workspace.workspaceFolders?.length
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+      await cfg().update("triage.autoAnswer.dryRun", on, target);
+    },
+  });
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(TriageViewProvider.viewId, triageView),
+  );
+
+  /**
+   * Hold is implemented by a hook in the user's ~/.claude/settings.json, so
+   * flipping the setting does nothing until the hooks are rewritten. That file
+   * is theirs — offer, never write behind their back.
+   */
+  async function offerHookUpdate(force = false): Promise<void> {
+    if (!hooksInstalled()) return; // nothing installed yet; Configure Hooks covers it
+    const t = triageConfig();
+    const want = t.enabled && t.holdEnabled;
+    if (!force && want === holdHookInstalled()) return;
+    if (force && !want) return; // a timeout change is moot while hold is off
+    const pick = await vscode.window.showInformationMessage(
+      want
+        ? "Agent View: update your Claude Code hooks so questions are held for the Triage inbox?"
+        : "Agent View: update your Claude Code hooks to stop holding questions?",
+      "Update hooks",
+    );
+    if (pick !== "Update hooks") return;
+    try {
+      installHooks(cfg().get<number>("hookPort", 47800), {
+        hold: want,
+        holdSeconds: t.holdTimeoutSeconds,
+      });
+      vscode.window.showInformationMessage(
+        `Agent View: hooks updated${want ? "" : " — questions are no longer held"}.`,
+      );
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Agent View: could not update hooks — ${e.message}`);
+    }
+  }
+
+  /** Markdown snapshot of the Decision Log — the answers you have already given,
+   *  in a form you can paste into CLAUDE.md if you want agents to stop asking. */
+  async function exportDecisions(): Promise<void> {
+    const decisions = triageStore.listDecisions().filter((d) => !d.revokedAt);
+    if (decisions.length === 0) {
+      vscode.window.showInformationMessage(
+        "Agent View: no decisions recorded yet — answer a question in Triage first.",
+      );
+      return;
+    }
+    const lines = ["# Decisions", "", "Recorded by Agent View Triage. One answer per question.", ""];
+    for (const d of decisions) {
+      const scope = d.scope.branch || d.scope.repo || "all repos";
+      lines.push(`## ${d.intent}`, "", d.answer, "");
+      lines.push(
+        `_${d.category} · ${scope} · used ${d.hitCount} time${d.hitCount === 1 ? "" : "s"}` +
+          `${d.expiresAt ? ` · expires ${new Date(d.expiresAt).toLocaleDateString()}` : ""}_`,
+        "",
+      );
+    }
+    const doc = await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: lines.join("\n"),
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  }
+
   // --- Unattended Fleet (governed auto-pilot) ---
   function unattendedConfig(): UnattendedConfig {
     const c = cfg();
@@ -1142,8 +1308,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(presence);
 
   // --- Hook server (live status + live "now doing X") ---
-  const hookServer = new HookServer(store, (event) => {
+  const hookServer = new HookServer(
+    store,
+    (event) => {
     presence.onHookEvent(event);
+    triage.onHookEvent(event);
     const id = event?.session_id || event?.sessionId;
     if (!id) return;
     const name = event?.hook_event_name || event?.hookEventName;
@@ -1174,7 +1343,11 @@ export function activate(context: vscode.ExtensionContext): void {
       // keep showing "Running: …" after it's done; falls back to lastAction.
       store.applyLiveAction(id, undefined);
     }
-  });
+    },
+    // Triage's Hold channel: this hook request stays open until a human answers
+    // in the Triage inbox, or the hold expires and Claude Code prompts as usual.
+    (event) => triage.intakeHeld(event),
+  );
   const port = cfg().get<number>("hookPort", 47800);
   hookServer.start(port).catch((e) => {
     console.warn(`[claude-code-agent-view] hook server failed on port ${port}: ${e.message}`);
@@ -1215,6 +1388,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("mas.newAgent", runNewAgent),
     vscode.commands.registerCommand("mas.refresh", () => store.refresh()),
     vscode.commands.registerCommand("mas.openCanvas", () => void openCanvas()),
+    vscode.commands.registerCommand("mas.openTriage", () => triageView.focus()),
+    vscode.commands.registerCommand("mas.triage.refresh", () => store.refresh()),
+    vscode.commands.registerCommand("mas.triage.exportDecisions", () =>
+      void exportDecisions().catch(reportErr),
+    ),
     vscode.commands.registerCommand("mas.toggleOlderAgents", () => store.setShowOlder(!store.showingOlder)),
 
     vscode.commands.registerCommand("mas.focusTopAttention", () => {
@@ -1275,6 +1453,8 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       if (confirm !== "Stop") return;
       terminals.stop(id, `Claude Code ${managed?.branch || ""}`.trim());
+      // Nothing is going to answer a stopped agent's question — let go of it.
+      triage.holds.releaseSession(id);
       await registry.remove(id);
       store.refresh();
     }),
@@ -1427,9 +1607,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     vscode.commands.registerCommand("mas.configureHooks", async () => {
       try {
-        const p = installHooks(cfg().get<number>("hookPort", 47800));
+        const t = triageConfig();
+        const p = installHooks(cfg().get<number>("hookPort", 47800), {
+          hold: t.enabled && t.holdEnabled,
+          holdSeconds: t.holdTimeoutSeconds,
+        });
         vscode.window.showInformationMessage(
-          `Agent View: hooks installed in ${p}. New Claude Code sessions will stream live status.`,
+          `Agent View: hooks installed in ${p}. New Claude Code sessions will stream live status` +
+            `${t.enabled && t.holdEnabled ? ", and questions will be held for the Triage inbox" : ""}.`,
         );
       } catch (e: any) {
         vscode.window.showErrorMessage(`Agent View: could not install hooks — ${e.message}`);

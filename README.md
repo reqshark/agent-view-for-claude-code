@@ -13,17 +13,19 @@ VS Code and VS Code-based IDEs (Antigravity, Cursor, Windsurf, …).
 > of Anthropic, PBC, used here only to describe interoperability. You need your own
 > Claude Code installation and Claude subscription to use it.
 
-> Status: v0.8.0 — discovery, worktree spawning, live status, the React detail view,
+> Status: v0.9.0 — discovery, worktree spawning, live status, the React detail view,
 > desktop notifications, ambient "now doing X" status, **Agent Race** (best-of-N),
 > **Fan-out**, **live plan progress**, failure detection, **Review & Land**, a **Teams
 > cockpit**, **Unattended Fleet**, **Evidence Gates**, **Live presence**, a
-> **Fleet Shift Report**, the **Session Board**, and the **Scroll**.
-> New in 0.8.0 — the Communication release: Claude Code's **session-to-session
-> messaging becomes visible** — the Teams cockpit reads the **native Agent Teams
-> store** (roster, shared task list, and a **message-mesh timeline** of who told
-> whom what), the Scroll and Session Board gain **agent-message events**, team
-> hook events narrate the lead's row live, and managed agents spawn with a stable
-> `--name` address when the CLI supports it. All of it read-only, no LLM calls.
+> **Fleet Shift Report**, the **Session Board**, the **Scroll**, and the message mesh.
+> New in 0.9.0 — the Attention release: a **Triage** panel sits between Agents and
+> Detail and compresses your whole fleet's questions into the few you actually have
+> to answer. **Claude decides which questions are the same one**, so five sessions
+> asking the same thing five different ways become **one row**; one answer **resumes
+> every session waiting on it**; and your answers become a **decision log** that
+> answers the next session by itself. Optional **Hold** suspends an asking agent
+> (burning no tokens) until you reply in the inbox. Falls back to offline matching
+> if you'd rather it never called a model.
 > Expect rough edges; issues and PRs welcome.
 
 ## Install
@@ -53,6 +55,48 @@ one-click spawning of parallel agents in clean worktrees.
 
 ## Features
 
+- **Triage** — the middle panel, between Agents and Detail. Supervising 5-20 sessions,
+  the bottleneck isn't agent capability, it's your attention: every session asks
+  independently, and they ask the *same* things (package manager, branch strategy, test
+  framework, what's off limits). Triage compresses that:
+  - **One row per distinct question — judged by Claude.** Claude Code is already a
+    requirement of this extension, so Triage uses it for the judgment word-matching
+    can't make: *"install deps"* and *"install dependencies"* are one decision;
+    *"tests for auth"* and *"tests for billing"* are two. Measured on a live fleet,
+    three sessions asking about the package manager in three unrelated phrasings
+    collapsed into a single row. Dedup is per-repo — the same question in *another*
+    repo is surfaced, never merged.
+  - **One answer resumes everyone** waiting on it, dispatched into each agent's terminal
+    (or straight back into a held session).
+  - **A decision log.** Your answer is recorded with a **scope** (this session / branch /
+    repo / all repos) and an **expiry** (once / today / this week / until revoked). When a
+    later session asks something the log covers, Claude confirms the recorded answer
+    genuinely resolves *that* question before it is used — and the agent is handed your
+    answer **verbatim**, so what the Decisions tab shows is exactly what the agent was
+    told. Auditable in the **Auto** tab, revocable in **Decisions**, stored as readable
+    JSON in `.agentview/triage/decisions.json`.
+  - **Conservative by construction.** Scope, expiry and revocation are deterministic
+    filters the engine owns — the model is never asked to second-guess them, only to
+    judge content. Permission asks are never auto-answered from a general decision, file
+    conflicts are never auto-answered at all, staleness hints flag decisions whose files
+    have since churned or that a session re-asked, and if the auto-answer error rate
+    passes 5% Triage demotes itself to dry run and tells you.
+  - **Hold (opt-in).** With `mas.triage.hold.enabled`, an asking agent is suspended
+    inside its own `AskUserQuestion` call until you answer in the inbox — it burns no
+    tokens and does no speculative work meanwhile. If Agent View isn't running or the
+    hold expires, Claude Code prompts exactly as it does today; a hold can only ever
+    delay a prompt, never lose it.
+  - **Conflict radar built in.** Two live sessions editing the same file raise a
+    conflict row at the top of the inbox, before merge time.
+
+  **On cost and consent:** the matching calls run `claude -p` against a cheap model and
+  use your Claude subscription, so you are asked to confirm **once** and nothing runs
+  before you do. They are bounded by construction — a call only happens when a *new*
+  question arrives, which only happens when an agent is already blocked on you, and
+  they're capped at two at a time. Set `mas.triage.ai.enabled` to `false` to run Triage
+  entirely offline on lexical matching instead: it still groups, still auto-answers,
+  still holds — it just misses paraphrases. That's also the automatic fallback whenever
+  Claude is unreachable.
 - **Agents panel** — a live tree of every Claude Code session discovered from
   `~/.claude/projects`, showing status (idle / running / thinking / needs-you), model,
   and token/cost, with a React **Detail** view of the transcript. A parent delegating to
@@ -171,10 +215,18 @@ one-click spawning of parallel agents in clean worktrees.
 │  store.ts (fs.watch)   terminals.ts                          │
 │        │                                                     │
 │        ├──► AgentsProvider (native TreeView: mas.agents)     │
-│        └──► WebviewProvider (React detail: mas.detail) ◄───┐ │
+│        ├──► TriageViewProvider (React inbox:  mas.triage) ◄┤ │
+│        └──► WebviewProvider (React detail:    mas.detail) ◄┐ │
 └───────────────────────────────────────────────────────────┼─┘
                                                 webview-ui/ (React + Vite)
 ```
+
+The sidebar is three equal thirds: **Agents** (who is running), **Triage** (what needs
+you), **Detail** (what one agent is doing). `src/triage/` holds the pipeline —
+normalize, dedup, decision-log lookup, route — plus the on-disk decision log and the
+blocking Hold channel. `judge.ts` is the Claude-backed adjudicator; `text.ts` is the
+offline lexical matcher that shortlists candidates for it and takes over entirely when
+Claude is off or unreachable.
 
 Opt-in AI layer (off by default): `src/features/{router,mergeAdvisor,conflicts}` plus
 `src/llm/runner.ts` power the "Needs you" inbox, Merge Advisor, and Conflict Radar.

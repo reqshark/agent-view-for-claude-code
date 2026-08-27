@@ -2,7 +2,7 @@
   "name": "agent-view-for-claude-code",
   "displayName": "Agent View for Claude Code (Unofficial)",
   "description": "Spawn, orchestrate, and monitor multiple Claude Code agents — each in its own git worktree — from one panel.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "publisher": "inthepond",
   "license": "Apache-2.0",
   "repository": {
@@ -49,12 +49,20 @@
           "id": "mas.agents",
           "name": "Agents",
           "type": "tree",
-          "icon": "media/mas.svg"
+          "icon": "media/mas.svg",
+          "initialSize": 1
+        },
+        {
+          "id": "mas.triage",
+          "name": "Triage",
+          "type": "webview",
+          "initialSize": 1
         },
         {
           "id": "mas.detail",
           "name": "Detail",
-          "type": "webview"
+          "type": "webview",
+          "initialSize": 1
         }
       ]
     },
@@ -76,6 +84,23 @@
         "title": "Open Session Board",
         "category": "Agent View",
         "icon": "$(layout)"
+      },
+      {
+        "command": "mas.openTriage",
+        "title": "Open Triage Inbox",
+        "category": "Agent View",
+        "icon": "$(inbox)"
+      },
+      {
+        "command": "mas.triage.refresh",
+        "title": "Refresh Triage",
+        "category": "Agent View",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mas.triage.exportDecisions",
+        "title": "Export Triage Decisions",
+        "category": "Agent View"
       },
       {
         "command": "mas.toggleOlderAgents",
@@ -277,6 +302,16 @@
           "command": "mas.unattendedOff",
           "when": "view == mas.agents && mas.unattended",
           "group": "navigation@9"
+        },
+        {
+          "command": "mas.triage.refresh",
+          "when": "view == mas.triage",
+          "group": "navigation@0"
+        },
+        {
+          "command": "mas.triage.exportDecisions",
+          "when": "view == mas.triage",
+          "group": "1_reports@1"
         }
       ],
       "editor/context": [
@@ -373,7 +408,9 @@
         },
         "mas.spawnExtraFlags": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Extra CLI flags appended to every spawned `claude` invocation."
         },
@@ -392,6 +429,96 @@
           "type": "boolean",
           "default": false,
           "description": "Conflict Radar — highlight files edited by more than one agent. Local-only; does NOT use your Claude subscription."
+        },
+        "mas.triage.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Triage — compress every agent's questions into one inbox: identical questions from different sessions are grouped and answered once, and answers become a reusable decision log.\n\nLocal-only and free by default; the optional AI Normalize pass is separately gated."
+        },
+        "mas.triage.dedup.threshold": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0.5,
+          "maximum": 1,
+          "description": "Lexical similarity above which two questions in the same repo merge without asking Claude. With mas.triage.ai.enabled on this is a fast path, and anything below it down to ~0.35 is adjudicated by Claude; with AI off it is the whole decision."
+        },
+        "mas.triage.lookup.threshold": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0.5,
+          "maximum": 1,
+          "description": "Lexical similarity a past decision must reach to auto-answer when Claude is unavailable. With mas.triage.ai.enabled on, every auto-answer is model-confirmed and this is only the offline fallback — deliberately stricter than the dedup threshold."
+        },
+        "mas.triage.autoAnswer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Answer a question directly from the decision log when a recorded decision matches, covers the question's repo/branch, and hasn't expired. Permission asks and conflicts are never answered this way unless you made the decision on a permission ask itself."
+        },
+        "mas.triage.autoAnswer.dryRun": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Log what auto-answer *would* have done, but still ask you. Recommended for the first week. Triage also forces this on by itself if the auto-answer error rate passes 5%."
+        },
+        "mas.triage.ai.enabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Let Claude decide whether two agents are asking the same question, and whether a recorded decision really answers a new one. This is what makes Triage work well — token matching cannot tell that \"install deps\" and \"install dependencies\" are one decision while \"tests for auth\" and \"tests for billing\" are two.\n\nRuns Claude Code in the background (`claude -p`) and **consumes your Claude subscription usage** — you'll be asked to confirm once, and nothing runs before you do. Calls only happen when a *new* question arrives (an agent is already blocked on you), are capped at 2 at a time, and use a cheap model.\n\nTurn this off to run Triage fully offline on lexical matching alone — it still works, just misses paraphrases."
+        },
+        "mas.triage.ai.model": {
+          "type": "string",
+          "default": "claude-haiku-4-5",
+          "description": "Model used for Triage's matching calls. A cheap, fast model is the right choice — these are short yes/no judgments."
+        },
+        "mas.triage.conflict.detect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Raise a Triage item when two live sessions are editing the same file, so a collision surfaces before merge time. Local-only; never auto-answered."
+        },
+        "mas.triage.defaultScope": {
+          "type": "string",
+          "default": "repo",
+          "enum": [
+            "session",
+            "branch",
+            "repo",
+            "global"
+          ],
+          "enumDescriptions": [
+            "Only the session that asked.",
+            "Any session on this branch.",
+            "Any session in this repo.",
+            "Every repo you supervise."
+          ],
+          "description": "Scope pre-selected when you answer. Most engineering decisions are repo-wide and long-lived, so this defaults wide; revoke is the backstop."
+        },
+        "mas.triage.defaultExpiry": {
+          "type": "string",
+          "default": "forever",
+          "enum": [
+            "once",
+            "today",
+            "week",
+            "forever"
+          ],
+          "enumDescriptions": [
+            "Answer now; remember nothing.",
+            "Reusable until midnight.",
+            "Reusable for seven days.",
+            "Reusable until you revoke it."
+          ],
+          "description": "Expiry pre-selected when you answer."
+        },
+        "mas.triage.hold.enabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Hold — suspend an agent inside its `AskUserQuestion` call until you answer in the Triage inbox, instead of it prompting in its own terminal. A held agent burns no tokens and does no speculative work.\n\nRequires **Configure Claude Code Hooks**; re-run it after changing this. If the extension isn't running or the hold expires, Claude Code prompts exactly as it does today — a hold can only ever delay a prompt, never lose it."
+        },
+        "mas.triage.hold.timeoutSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 5,
+          "maximum": 3600,
+          "description": "How long a held question may wait for you before the agent falls back to prompting in its own terminal."
         },
         "mas.attentionRouter.enabled": {
           "type": "boolean",
@@ -520,7 +647,9 @@
         },
         "mas.evidence.commands": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "markdownDescription": "Explicit evidence commands to run in the agent's worktree (in order), e.g. `[\"npm run typecheck\", \"npm test\"]`. When set, these replace auto-detection and skip the per-repo approval prompt."
         },

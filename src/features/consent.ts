@@ -11,7 +11,13 @@ export async function requireLlmConsent(context: vscode.ExtensionContext): Promi
   if (context.globalState.get<boolean>(KEY)) return true;
   const pick = await vscode.window.showWarningMessage(
     "This AI feature runs Claude Code in the background (`claude -p`) and will consume your Claude subscription usage. Enable AI features?",
-    { modal: true, detail: "Conflict Radar is local-only and unaffected. Only the Attention Router and Merge Advisor use your subscription." },
+    {
+      modal: true,
+      detail:
+        "Used by Triage (to judge whether two agents are asking the same question), the Attention " +
+        "Router, and the Merge Advisor. Conflict Radar is local-only and unaffected. Triage still " +
+        "works if you decline — it falls back to offline matching.",
+    },
     "Enable",
   );
   if (pick === "Enable") {

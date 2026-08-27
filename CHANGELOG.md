@@ -3,6 +3,128 @@
 All notable changes to **Agent View for Claude Code** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-08-27
+
+The Attention release: **Triage**, a third sidebar panel between Agents and
+Detail (the three now split the sidebar into equal thirds). When you supervise
+5-20 sessions the bottleneck is not agent capability, it is your attention:
+every session asks independently, and they ask the same things. Triage
+compresses N sessions' questions down to the distinct ones, and remembers your
+answers so the next session does not have to ask at all.
+
+Claude Code is already a hard requirement of this extension, so Triage uses it
+for the judgment that makes the feature work: **is this the same question
+another agent already asked?** Word overlap cannot answer that — "install deps"
+and "install dependencies" are one decision, "tests for auth" and "tests for
+billing" are two. An offline lexical matcher shortlists candidates for the model
+and takes over entirely when it is off or unreachable.
+
+### Added
+
+- **Triage panel (`mas.triage`).** Three tabs: **Inbox** (open questions),
+  **Auto** (what was answered from the log, for review), **Decisions** (the log
+  itself). A footer shows the real metrics — interrupt compression, auto-answer
+  hit rate, auto-answer error rate, median wait.
+- **Question intake, two sources.** Explicit asks are read from
+  `AskUserQuestion` tool calls and permission `Notification` hook events, with
+  the session transcript as the zero-config fallback so it works without hooks
+  installed. Implicit ones are file collisions between two live sessions,
+  raised as `conflict` rows.
+- **Dedup, adjudicated by Claude.** Questions are normalized (session-specific
+  detail — line numbers, absolute paths, hashes — stripped) and grouped within a
+  repo, so "3 sessions are waiting on this" is one row. The lexical measure
+  shortlists which open rows are worth asking about and settles the
+  near-identical cases without a call; Claude decides the rest. On a live fleet,
+  three sessions asking about the package manager in three unrelated phrasings
+  (lexically 0.55-0.76, all below the merge threshold) collapsed into one row.
+  The same question in *another* repo is surfaced ("also in 2 repos") but never
+  merged: the answers usually differ. A mis-merge can be **split** back apart by
+  hand.
+- **One answer resumes everyone** in the cluster, dispatched into each agent's
+  terminal — or straight back into a held session.
+- **Decision Log.** Answers are recorded with a scope (this session / branch /
+  repo / all repos) and an expiry (once / today / this week / until revoked) in
+  `.agentview/triage/decisions.json` — readable, diffable, hand-editable JSON,
+  partitioned by repo. **Export Triage Decisions** renders it as markdown.
+- **Auto-answer, model-confirmed.** A new question that matches a live, in-scope
+  decision is answered without you — but only after Claude confirms the recorded
+  answer genuinely resolves *that* question, with the prompt told to return false
+  on partial coverage or any doubt. The agent is handed your answer **verbatim**;
+  the model only ever returns yes/no, so what the Decisions tab shows is exactly
+  what the agent was told. Auditable in the Auto tab, one-click revoke.
+  `mas.triage.autoAnswer.dryRun` logs what *would* have happened while still
+  asking you — recommended for the first week.
+- **Hold (opt-in, `mas.triage.hold.enabled`).** Installs a blocking
+  `AskUserQuestion` hook so an asking agent is suspended until you answer in the
+  inbox — burning no tokens and doing no speculative work meanwhile. Every
+  failure path (extension not running, port taken, hold expired, you dismiss the
+  row) prints nothing and exits 0, which Claude Code treats as "no decision" and
+  prompts as it does today. **A hold can only ever delay a prompt, never lose
+  one.** Re-run **Configure Claude Code Hooks** after changing the setting; the
+  extension offers to do it for you and never rewrites `~/.claude/settings.json`
+  unprompted.
+- **Staleness hints (never automatic expiry).** A decision is flagged when the
+  files under its path scope have churned substantially since it was made, or
+  when a session re-asked a reworded version right after being auto-answered.
+  One click to confirm or revoke.
+- **Error-rate circuit breaker.** Auto-answers you later revoke or edit are
+  counted; past a 5% error rate (with a 10-answer minimum sample) auto-answer
+  demotes itself to dry run and says so. It recovers on its own once the bad
+  decisions are cleaned up.
+
+### Changed
+
+- The Agent View sidebar now contributes **three views** — Agents, Triage,
+  Detail — each with `initialSize: 1`, so they open as equal thirds.
+- `installHooks(port, opts)` takes options and can install Triage's blocking
+  hook; `HookServer` gained a second `/mas-triage` endpoint that holds its
+  response open. Both are additive — existing hooks and behavior are unchanged
+  when Hold is off, and MAS hook removal still leaves your own hooks alone.
+
+### Notes on the design
+
+Departures from the Triage spec, all documented in the code:
+
+- **Matching is Claude, not embeddings.** The spec reaches for an embedding
+  model and cosine thresholds. This uses the model that is already installed:
+  `claude -p` against a Haiku-class model, asked two narrow yes/no questions —
+  "would one answer satisfy both agents?" and "does this standing decision
+  already answer this?". That is strictly better than cosine at the thing the
+  spec's risk table worries most about (collapsing two different questions into
+  one), and it needs no new dependency, model download, or index.
+
+  Cost is bounded by construction: a call only happens when a *new* question
+  arrives, which only happens when an agent is already blocked on a human, so
+  latency is free and the spend is negligible next to the stalled agent. Calls
+  are capped at two concurrent and at three candidates per question.
+
+- **Lexical matching is the prefilter and the fallback, not the decision.**
+  `text.ts` (token Jaccard with light stemming, character-trigram cosine, entity
+  overlap) ranks which candidates are worth a call and settles the near-identical
+  cases without one. With AI off, declined, or unreachable it becomes the whole
+  decision — Triage keeps working offline, it just misses paraphrases. Its
+  thresholds were recalibrated for that role: the spec's 0.88 / 0.92 were named
+  for embedding cosine and do not transfer, so the defaults are **0.70 (dedup)**
+  and **0.80 (lookup)**, preserving the property the spec cares about — that
+  auto-answer is strictly stricter than merging.
+
+- **The model judges content; the engine judges scope.** Repo, branch, path,
+  expiry and revocation are deterministic filters applied before any call, and
+  the prompts are deliberately not shown the scope. An early version passed it
+  in and the model rejected a perfectly valid match by second-guessing a check
+  that had already passed.
+
+- **Storage is JSON, not SQLite + sqlite-vec.** A VS Code extension cannot ship
+  a native module without breaking on some platform it has to run on, the v0
+  data volume is tiny, and a readable file is one you can diff, commit, and fix
+  by hand.
+
+- **`mas.triage.ai.enabled` defaults on**, unlike every other AI helper here.
+  Judging sameness *is* the feature, so an off-by-default version would ship
+  broken. It is still behind the same one-time consent modal — nothing calls a
+  model until you say yes once — and declining leaves you with the offline
+  matcher rather than a dead panel.
+
 ## [0.8.0] — 2026-08-10
 
 The Communication release: Claude Code's session-to-session messaging (Agent
