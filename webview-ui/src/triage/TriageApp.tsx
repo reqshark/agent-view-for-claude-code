@@ -4,6 +4,7 @@ import type {
   AnswerExpiry,
   AnswerScope,
   AutoRow,
+  CapturedRow,
   DecisionRow,
   ExtToTriage,
   QuestionKind,
@@ -232,6 +233,96 @@ function InboxCard({
   );
 }
 
+/** An answer the human gave at the session itself, offered for the log. */
+function CapturedCard({
+  row,
+  defaultScope,
+  defaultExpiry,
+}: {
+  row: CapturedRow;
+  defaultScope: AnswerScope;
+  defaultExpiry: AnswerExpiry;
+}) {
+  const [scope, setScope] = useState<AnswerScope>(defaultScope);
+  const [expiry, setExpiry] = useState<AnswerExpiry>(defaultExpiry);
+
+  return (
+    <div className="t-card captured">
+      <div className="t-card-head static">
+        <span className="t-pip captured" />
+        <span className="t-intent" title={row.question}>
+          {row.intent}
+        </span>
+        <span className="t-age">{relTime(row.at)}</span>
+      </div>
+      <div className="t-answered">{row.answer}</div>
+      <div className="t-card-meta">
+        <span className="t-tag">answered at the session</span>
+        <span className="t-repo">
+          {row.sessionLabel} · {row.repoName}
+        </span>
+        {row.stillWaiting > 0 && (
+          <span className="t-tag held" title="Other sessions are parked on this same question right now.">
+            {row.stillWaiting} still waiting
+          </span>
+        )}
+      </div>
+      <div className="t-answer-row">
+        <select
+          className="t-select"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as AnswerScope)}
+          title={SCOPES.find((x) => x.value === scope)?.hint}
+        >
+          {SCOPES.map((x) => (
+            <option key={x.value} value={x.value}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="t-select"
+          value={expiry}
+          onChange={(e) => setExpiry(e.target.value as AnswerExpiry)}
+          title={EXPIRIES.find((x) => x.value === expiry)?.hint}
+        >
+          {EXPIRIES.filter((x) => x.value !== "once").map((x) => (
+            <option key={x.value} value={x.value}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+        <button
+          className="t-btn primary tiny"
+          title="Record this as a decision so the next session gets it without asking you."
+          onClick={() =>
+            post({ type: "remember", capturedId: row.id, scope, expiry, resumeWaiting: false })
+          }
+        >
+          Remember
+        </button>
+        {row.stillWaiting > 0 && (
+          <button
+            className="t-btn tiny"
+            title="Record it and send the same answer to the sessions still parked on this question."
+            onClick={() =>
+              post({ type: "remember", capturedId: row.id, scope, expiry, resumeWaiting: true })
+            }
+          >
+            Remember + resume {row.stillWaiting}
+          </button>
+        )}
+        <button
+          className="t-btn ghost tiny"
+          onClick={() => post({ type: "discardCaptured", capturedId: row.id })}
+        >
+          One-off
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AutoCard({ row }: { row: AutoRow }) {
   return (
     <div className={`t-card auto${row.bumped && !row.reviewed ? " bumped" : ""}`}>
@@ -367,6 +458,11 @@ function StatsBar({ stats, dryRun }: { stats: TriageStats; dryRun: boolean }) {
       <span title="Median time a session waited for you. Informational.">
         wait <b>{stats.medianHoldMs ? (holdMin ? `${holdMin}m` : "<1m") : "—"}</b>
       </span>
+      {stats.resolvedAtSession > 0 && (
+        <span title="Questions you answered at the session rather than here. Triage reads those answers back so they still reach the decision log.">
+          at session <b>{stats.resolvedAtSession}</b>
+        </span>
+      )}
       {dryRun && <span className="t-tag dry">dry run</span>}
     </div>
   );
@@ -441,7 +537,7 @@ export function TriageApp() {
 
       <div className="t-body">
         {tab === "inbox" &&
-          (state.inbox.length === 0 ? (
+          (state.inbox.length === 0 && state.captured.length === 0 ? (
             <div className="t-empty">
               Nothing needs you. Questions from every session land here, deduplicated — one answer
               resumes everyone waiting on it.
@@ -462,6 +558,22 @@ export function TriageApp() {
               />
             ))
           ))}
+
+        {tab === "inbox" && state.captured.length > 0 && (
+          <>
+            <div className="t-section">
+              Answered at the session — keep these?
+            </div>
+            {state.captured.map((row) => (
+              <CapturedCard
+                key={row.id}
+                row={row}
+                defaultScope={state.defaultScope}
+                defaultExpiry={state.defaultExpiry}
+              />
+            ))}
+          </>
+        )}
 
         {tab === "auto" &&
           (state.auto.length === 0 ? (

@@ -191,6 +191,12 @@ sizes equal unless you mean to change it.
   *before* any call, and the prompts are deliberately not told the scope — handing it over
   just invites the model to re-litigate a check that already passed, which it gets wrong.
   Keep that split.
+- **A question can be answered outside Triage, and usually is.** The human often walks
+  over to the session and answers in its terminal. `engine.captureAnswer()` reads that
+  answer back off the transcript (`toolUseResult.answers`) as the row is pruned, so the
+  Decision Log still learns from it; `dispatchAll()` skips any session that is no longer
+  `waiting`, so a late answer never lands in a session that moved on. Anything that
+  changes cluster pruning must keep both.
 - **Triage answers on the human's behalf.** Keep every guard that makes that safe: a
   `permission` question only ever reuses a decision the human made on a permission
   question, `conflict` questions are never auto-answered, an auto-answer always leaves a

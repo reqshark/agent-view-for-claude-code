@@ -119,6 +119,9 @@ body {
 .t-card.auto.bumped {
   border-left-color: var(--vscode-charts-yellow, #e2c08d);
 }
+.t-card.captured {
+  border-left-color: var(--vscode-charts-orange, #d18616);
+}
 .t-card.decision {
   border-left-color: var(--vscode-charts-purple, #b180d7);
 }
@@ -160,6 +163,9 @@ body {
 }
 .t-pip.auto {
   background: var(--vscode-charts-green, #89d185);
+}
+.t-pip.captured {
+  background: var(--vscode-charts-orange, #d18616);
 }
 .t-pip.dry {
   background: var(--vscode-descriptionForeground, #888);
@@ -226,6 +232,14 @@ body {
   margin-left: auto;
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+}
+
+.t-section {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.55;
+  margin: 6px 0 0 2px;
 }
 
 /* ---- raw questions ---- */

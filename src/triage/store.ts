@@ -17,6 +17,8 @@ export interface TriageMetrics {
   clustersAnswered: number;
   /** Questions resolved from the Decision Log without the human. */
   autoAnswers: number;
+  /** Questions the human answered at the session instead of in the inbox. */
+  resolvedAtSession: number;
   /** Hold durations, capped — the median is reported, informational only. */
   holdMs: number[];
   /** The circuit-breaker warning has been shown; don't nag on every scan.
@@ -30,6 +32,7 @@ function emptyMetrics(): TriageMetrics {
     rawQuestions: 0,
     clustersAnswered: 0,
     autoAnswers: 0,
+    resolvedAtSession: 0,
     holdMs: [],
     circuitNotified: false,
   };

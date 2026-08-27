@@ -3,6 +3,43 @@
 All notable changes to **Agent View for Claude Code** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] — 2026-08-27
+
+Closes the obvious hole in 0.9.0: **you often answer at the session, not in the
+inbox.** Triage now notices, reads the answer back, and offers to keep it —
+instead of silently dropping the row and letting the next session ask the same
+thing again.
+
+### Added
+
+- **Answered-at-the-session capture.** When a question leaves the inbox because
+  its session resumed, Triage reads the answer out of the transcript
+  (`toolUseResult.answers`, with the result sentence as fallback) and offers it
+  under **"Answered at the session — keep these?"** at the bottom of the Inbox.
+  **Remember** records it as a normal Decision with the usual scope and expiry;
+  **One-off** discards it. The Decision Log now builds itself however you answer.
+- **Remember + resume.** If other sessions are still parked on the same
+  question, the captured row says so and offers to send them the answer you
+  already gave — the compression still happens even though you answered in a
+  terminal. Offered, never automatic.
+- **`at session` metric.** Questions resolved outside the inbox are counted and
+  shown, and they count in the compression numerator: you were still
+  interrupted, so a ratio that ignored them would flatter the day.
+
+### Fixed
+
+- **No more stray answers into a moved-on session.** Answering a row whose
+  session had already resumed would type the answer into its terminal,
+  interrupting whatever it started next with a reply to a question it no longer
+  had. Dispatch now skips any session that is no longer waiting.
+- **A held agent no longer looks hung.** With Hold on, Claude Code has not
+  reached its own prompt yet, so the session prints nothing and anyone looking
+  at it sees a stall. Held sessions now narrate "Waiting on your answer in
+  Triage" in the tree and Detail, cleared however the hold ends (answered,
+  expired, or dismissed).
+- `toolUseId` is carried onto cluster members, without which the capture above
+  could never find the answer.
+
 ## [0.9.0] — 2026-08-27
 
 The Attention release: **Triage**, a third sidebar panel between Agents and

@@ -1074,6 +1074,7 @@ export function activate(context: vscode.ExtensionContext): void {
     headCommit: (repo) => headCommit(repo).catch(() => ""),
     churn: (repo, since, glob) => changedLineCount(repo, since, glob),
     hooksInstalled,
+    narrate: (id, phrase) => store.applyLiveAction(id, phrase),
     notify: (msg) => void vscode.window.showWarningMessage(msg),
     llmConsent: () => requireLlmConsent(context),
   });

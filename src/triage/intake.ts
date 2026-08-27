@@ -29,6 +29,9 @@ export interface RawQuestion {
    *  matching on them would split clusters that should merge. */
   intentText?: string;
   options?: string[];
+  /** The AskUserQuestion tool_use this came from. Lets Triage read back the
+   *  answer if the human replies at the session instead of in the inbox. */
+  toolUseId?: string;
   /** Stable per distinct ask, so a heartbeat doesn't re-intake the same one. */
   key: string;
 }
@@ -103,6 +106,7 @@ export function pendingQuestion(session: AgentSession): RawQuestion | null {
         text: described.text,
         intentText: described.question,
         options: described.options,
+        toolUseId: lastAsk.id,
         key: key(session.sessionId, described.text),
       };
     }
@@ -149,8 +153,43 @@ export function questionFromAskHook(event: any): RawQuestion | null {
     text: described.text,
     intentText: described.question,
     options: described.options,
+    toolUseId: event?.tool_use_id || event?.toolUseId,
     key: key(sessionId, described.text),
   };
+}
+
+/**
+ * The answer an AskUserQuestion eventually received, read back off the
+ * transcript — i.e. the human walked over to the session and answered there
+ * instead of in the Triage inbox. Without this, every such answer is invisible
+ * to the Decision Log and the next session asks the same thing again.
+ *
+ * Claude Code records it two ways; the structured map is authoritative and the
+ * result sentence is the fallback:
+ *   toolUseResult.answers  {"<question>": "<chosen label>"}
+ *   content                'Your questions have been answered: "<q>"="<a>". ...'
+ */
+export function answerAtSession(session: AgentSession, toolUseId: string): string | null {
+  for (const line of readParsedLines(session.jsonlPath)) {
+    const content = line?.message?.content;
+    if (!Array.isArray(content)) continue;
+    if (!content.some((b: any) => b?.type === "tool_result" && b.tool_use_id === toolUseId)) continue;
+
+    const answers = line?.toolUseResult?.answers;
+    if (answers && typeof answers === "object") {
+      const picked = Object.values(answers)
+        .filter((v): v is string => typeof v === "string" && !!v.trim())
+        .map((v) => v.trim());
+      if (picked.length) return picked.join("; ").slice(0, MAX_TEXT);
+    }
+
+    const block = content.find((b: any) => b?.type === "tool_result" && b.tool_use_id === toolUseId);
+    const raw = typeof block?.content === "string" ? block.content : "";
+    const pairs = [...raw.matchAll(/"[^"]*"="([^"]*)"/g)].map((m) => m[1]).filter(Boolean);
+    if (pairs.length) return pairs.join("; ").slice(0, MAX_TEXT);
+    return null;
+  }
+  return null;
 }
 
 export function contextFor(session: AgentSession, repoRoot?: string): QuestionContext {
@@ -200,6 +239,7 @@ export function toQuestion(raw: RawQuestion, session: AgentSession, context: Que
     text: raw.text,
     intentText: raw.intentText,
     options: raw.options,
+    toolUseId: raw.toolUseId,
     context,
     createdAt: Date.now(),
   };

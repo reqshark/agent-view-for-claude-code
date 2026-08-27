@@ -10,6 +10,7 @@ import { TriageStore } from "./store";
 import {
   contextFor,
   conflictQuestions,
+  answerAtSession,
   pendingQuestion,
   questionFromAskHook,
   questionFromNotification,
@@ -21,6 +22,7 @@ import {
   AnswerExpiry,
   AnswerScope,
   AutoRow,
+  CapturedRow,
   Cluster,
   ClusterMember,
   Decision,
@@ -64,6 +66,8 @@ export interface TriageDeps {
   /** Lines changed under `pathGlob` since `sinceCommit`; -1 when unknown. */
   churn(repo: string, sinceCommit: string, pathGlob?: string): Promise<number>;
   hooksInstalled(): boolean;
+  /** Set (or clear) the live "now doing X" phrase on a session's row. */
+  narrate(sessionId: string, phrase: string | undefined): void;
   notify(message: string): void;
   /** One-time consent gate for the optional AI Normalize pass. */
   llmConsent(): Promise<boolean>;
@@ -80,6 +84,7 @@ const REPEAT_SIMILARITY = 0.7;
 /** Changed lines under a decision's pathGlob before it reads as stale. */
 const CHURN_STALE_LINES = 200;
 const MAX_AUTO_ROWS = 50;
+const MAX_CAPTURED_ROWS = 20;
 /**
  * Below this lexical score a decision-log entry is not worth a model call. The
  * log can grow large, so it needs *some* floor; it is deliberately low, because
@@ -119,6 +124,10 @@ export class TriageEngine {
 
   private readonly clusters = new Map<string, StoredCluster>();
   private auto: AutoRow[] = [];
+  /** Answers the human gave at the session, waiting to be kept or discarded. */
+  private captured: CapturedRow[] = [];
+  /** Cluster context kept alive for a captured answer after its cluster went. */
+  private readonly capturedContext = new Map<string, { cluster: StoredCluster; answer: string }>();
   /** decisionId -> staleness hint, refreshed off the git churn probe. */
   private readonly staleHints = new Map<string, string>();
   /** sessionId -> the decision that just auto-answered it (repeat detector). */
@@ -183,7 +192,16 @@ export class TriageEngine {
     const q = toQuestion(raw, session, contextFor(session, this.deps.repoRoot(session)));
     const answered = await this.ingest(q, session, true);
     if (answered !== null) return answered;
-    return this.holds.hold(q.id, sessionId, Math.max(5, cfg.holdTimeoutSeconds) * 1000);
+
+    // A held agent prints nothing in its own terminal — Claude Code has not
+    // reached its prompt yet — so anyone looking at the session sees a hang.
+    // Say where the question went, and clear it however the hold ends.
+    this.deps.narrate(sessionId, "Waiting on your answer in Triage");
+    try {
+      return await this.holds.hold(q.id, sessionId, Math.max(5, cfg.holdTimeoutSeconds) * 1000);
+    } finally {
+      this.deps.narrate(sessionId, undefined);
+    }
   }
 
   /** A permission Notification from the hook server (never held, never auto). */
@@ -324,6 +342,7 @@ export class TriageEngine {
       text: q.text,
       intentText: q.intentText,
       options: q.options,
+      toolUseId: q.toolUseId,
       at: q.createdAt,
       held,
     };
@@ -654,6 +673,12 @@ export class TriageEngine {
     const stranded: { sessionId: string; label: string }[] = [];
     for (const m of members) {
       if (this.holds.release(m.questionId, answer)) continue;
+      // The session moved on while the row sat in the inbox — the human almost
+      // certainly answered it at the terminal. Typing the answer in now would
+      // interrupt whatever it started doing next with a reply to a question it
+      // no longer has.
+      const session = this.store.getById(m.sessionId);
+      if (session && session.status !== "waiting" && session.status !== "error") continue;
       if (this.deps.dispatchToTerminal(m.sessionId, oneLine)) continue;
       stranded.push({ sessionId: m.sessionId, label: m.label });
     }
@@ -772,11 +797,16 @@ export class TriageEngine {
     return {
       rawQuestions: m.rawQuestions,
       clustersAnswered: m.clustersAnswered,
-      compression: m.rawQuestions > 0 ? m.clustersAnswered / m.rawQuestions : 0,
+      // An answer given at the session is still an interruption the human
+      // absorbed, so it belongs in the numerator — leaving it out would make
+      // the compression ratio flatter than the day actually was.
+      compression:
+        m.rawQuestions > 0 ? (m.clustersAnswered + m.resolvedAtSession) / m.rawQuestions : 0,
       autoAnswers: m.autoAnswers,
       autoHitRate: m.rawQuestions > 0 ? m.autoAnswers / m.rawQuestions : 0,
       autoErrorRate,
       medianHoldMs: median(m.holdMs),
+      resolvedAtSession: m.resolvedAtSession,
       circuitOpen: m.autoAnswers >= ERROR_MIN_SAMPLE && autoErrorRate > ERROR_CEILING,
     };
   }
@@ -867,6 +897,7 @@ export class TriageEngine {
       defaultScope: cfg.defaultScope,
       defaultExpiry: cfg.defaultExpiry,
       inbox,
+      captured: this.captured,
       auto: this.auto,
       decisions,
       stats,
@@ -892,11 +923,19 @@ export class TriageEngine {
         if (!liveConflicts.has(id)) this.clusters.delete(id);
         continue;
       }
+      const gone: ClusterMember[] = [];
       cluster.members = cluster.members.filter((m) => {
         if (this.holds.isHeld(m.questionId)) return true;
         const s = byId.get(m.sessionId);
-        return !!s && (s.status === "waiting" || s.status === "error");
+        const live = !!s && (s.status === "waiting" || s.status === "error");
+        if (!live) gone.push(m);
+        return live;
       });
+      // A member that stopped waiting was answered somewhere else — almost
+      // always by the human walking over to the session. Read the answer back
+      // before the row disappears, or the decision is lost and the next session
+      // asks the same thing again.
+      for (const m of gone) this.captureAnswer(cluster, m, byId.get(m.sessionId));
       if (cluster.members.length === 0) this.clusters.delete(id);
     }
     for (const [sessionId, rec] of this.recentAuto) {
@@ -905,6 +944,74 @@ export class TriageEngine {
     for (const sessionId of this.scanned.keys()) {
       if (!byId.has(sessionId)) this.scanned.delete(sessionId);
     }
+  }
+
+  /**
+   * Record what the human answered at the session, so answering in the terminal
+   * still builds the Decision Log. Only structured asks can be read back
+   * (`AskUserQuestion` writes the chosen labels into the transcript); a
+   * permission prompt approved in the terminal leaves no answer text worth
+   * remembering, so it is only counted.
+   */
+  private captureAnswer(
+    cluster: StoredCluster,
+    member: ClusterMember,
+    session: AgentSession | undefined,
+  ): void {
+    this.triageStore.updateMetrics((m) => void m.resolvedAtSession++);
+    if (!session || !member.toolUseId || cluster.kind !== "ask") return;
+    if (this.captured.some((c) => c.id === member.questionId)) return;
+
+    const answer = answerAtSession(session, member.toolUseId);
+    if (!answer) return;
+
+    // The other members are still parked on the identical question, so this
+    // answer can resume them too — offered, never done silently.
+    const stillWaiting = cluster.members.filter((m) => m.questionId !== member.questionId).length;
+    this.captured.unshift({
+      id: member.questionId,
+      intent: cluster.norm.intent,
+      question: member.text,
+      answer,
+      sessionLabel: member.label,
+      repoName: path.basename(cluster.context.repo) || cluster.context.repo,
+      at: Date.now(),
+      stillWaiting,
+    });
+    if (this.captured.length > MAX_CAPTURED_ROWS) this.captured.length = MAX_CAPTURED_ROWS;
+    this.capturedContext.set(member.questionId, { cluster, answer });
+  }
+
+  /** Keep an answer the human gave at the session as a reusable Decision. */
+  remember(
+    capturedId: string,
+    scope: AnswerScope,
+    expiry: AnswerExpiry,
+    resumeWaiting: boolean,
+  ): void {
+    const row = this.captured.find((c) => c.id === capturedId);
+    const ctx = this.capturedContext.get(capturedId);
+    if (!row || !ctx) return;
+
+    if (expiry !== "once") this.recordDecision(ctx.cluster, ctx.answer, scope, expiry);
+
+    // The human already answered this once; sending it to the sessions still
+    // parked on the same question is the whole point of the compression.
+    if (resumeWaiting) {
+      const waiting = this.clusters.get(ctx.cluster.id);
+      if (waiting && waiting.state === "open" && waiting.members.length) {
+        this.dispatchAll(waiting.members, ctx.answer);
+        this.triageStore.updateMetrics((m) => void m.clustersAnswered++);
+        this.clusters.delete(waiting.id);
+      }
+    }
+    this.discardCaptured(capturedId);
+  }
+
+  discardCaptured(capturedId: string): void {
+    this.captured = this.captured.filter((c) => c.id !== capturedId);
+    this.capturedContext.delete(capturedId);
+    this._onDidChange.fire();
   }
 
   /**

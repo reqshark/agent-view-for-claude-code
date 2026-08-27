@@ -50,6 +50,12 @@ export class TriageViewProvider implements vscode.WebviewViewProvider {
         case "dismiss":
           this.engine.dismiss(msg.clusterId);
           break;
+        case "remember":
+          this.engine.remember(msg.capturedId, msg.scope, msg.expiry, msg.resumeWaiting);
+          break;
+        case "discardCaptured":
+          this.engine.discardCaptured(msg.capturedId);
+          break;
         case "split":
           this.engine.split(msg.clusterId, msg.questionId);
           break;

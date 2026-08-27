@@ -47,6 +47,27 @@ export interface Decision {
 export type AnswerScope = "session" | "branch" | "repo" | "global";
 export type AnswerExpiry = "once" | "today" | "week" | "forever";
 
+/**
+ * A question the human answered at the session itself — in the agent's own
+ * terminal — while it was sitting in the Triage inbox. Triage read the answer
+ * back off the transcript so the decision is not lost; the human decides
+ * whether it becomes a reusable Decision.
+ */
+export interface CapturedRow {
+  id: string;
+  intent: string;
+  /** The raw question, so the answer can be judged in context. */
+  question: string;
+  /** What the human actually replied at the session. */
+  answer: string;
+  sessionLabel: string;
+  repoName: string;
+  at: number;
+  /** Other sessions still parked on this same question. Remembering the answer
+   *  can resume them too. */
+  stillWaiting: number;
+}
+
 /** One open Cluster as rendered in the Inbox. */
 export interface TriageRow {
   id: string;
@@ -106,6 +127,8 @@ export interface TriageStats {
   autoErrorRate: number;
   /** Informational: how fast the human replies. */
   medianHoldMs: number;
+  /** Questions the human answered at the session rather than in the inbox. */
+  resolvedAtSession: number;
   /** The error ceiling was breached and auto-answer forced itself to dry run. */
   circuitOpen: boolean;
 }
@@ -122,6 +145,8 @@ export interface TriageState {
   defaultScope: AnswerScope;
   defaultExpiry: AnswerExpiry;
   inbox: TriageRow[];
+  /** Answers the human gave at the session, offered for the Decision Log. */
+  captured: CapturedRow[];
   auto: AutoRow[];
   decisions: DecisionRow[];
   stats: TriageStats;
@@ -140,6 +165,15 @@ export type TriageToExt =
       expiry: AnswerExpiry;
     }
   | { type: "dismiss"; clusterId: string }
+  | {
+      type: "remember";
+      capturedId: string;
+      scope: AnswerScope;
+      expiry: AnswerExpiry;
+      /** Also send this answer to the sessions still parked on the question. */
+      resumeWaiting: boolean;
+    }
+  | { type: "discardCaptured"; capturedId: string }
   | { type: "split"; clusterId: string; questionId: string }
   | { type: "openSession"; sessionId: string }
   | { type: "revokeDecision"; decisionId: string; reason?: string }

@@ -13,7 +13,7 @@ VS Code and VS Code-based IDEs (Antigravity, Cursor, Windsurf, …).
 > of Anthropic, PBC, used here only to describe interoperability. You need your own
 > Claude Code installation and Claude subscription to use it.
 
-> Status: v0.9.0 — discovery, worktree spawning, live status, the React detail view,
+> Status: v0.9.1 — discovery, worktree spawning, live status, the React detail view,
 > desktop notifications, ambient "now doing X" status, **Agent Race** (best-of-N),
 > **Fan-out**, **live plan progress**, failure detection, **Review & Land**, a **Teams
 > cockpit**, **Unattended Fleet**, **Evidence Gates**, **Live presence**, a
@@ -83,9 +83,15 @@ one-click spawning of parallel agents in clean worktrees.
     passes 5% Triage demotes itself to dry run and tells you.
   - **Hold (opt-in).** With `mas.triage.hold.enabled`, an asking agent is suspended
     inside its own `AskUserQuestion` call until you answer in the inbox — it burns no
-    tokens and does no speculative work meanwhile. If Agent View isn't running or the
-    hold expires, Claude Code prompts exactly as it does today; a hold can only ever
+    tokens and does no speculative work meanwhile. A held session narrates "Waiting on
+    your answer in Triage" so it doesn't read as a hang. If Agent View isn't running or
+    the hold expires, Claude Code prompts exactly as it does today; a hold can only ever
     delay a prompt, never lose it.
+  - **Answer wherever you like.** If you walk over to the session and answer in its
+    own terminal, Triage notices, reads the answer back out of the transcript, and
+    offers to keep it as a decision — and to send it to any sessions still parked on
+    the same question. The decision log builds itself however you answer, and Triage
+    never types a stale answer into a session that has already moved on.
   - **Conflict radar built in.** Two live sessions editing the same file raise a
     conflict row at the top of the inbox, before merge time.
 
