@@ -894,6 +894,7 @@ export class TriageEngine {
       dryRun: cfg.dryRun || stats.circuitOpen,
       holdEnabled: cfg.holdEnabled,
       hooksInstalled: this.deps.hooksInstalled(),
+      decisionsPath: this.triageStore.decisionsLocation(),
       defaultScope: cfg.defaultScope,
       defaultExpiry: cfg.defaultExpiry,
       inbox,

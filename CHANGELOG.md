@@ -3,6 +3,41 @@
 All notable changes to **Agent View for Claude Code** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] — 2026-08-27
+
+Triage stops writing into your project.
+
+0.9.0 and 0.9.1 put `.agentview/triage/` in the workspace unconditionally — and
+because the metric counters tick on the *first question any agent asks*, the
+files appeared whether or not you ever opened the panel. That is not a panel's
+place to put anything, and it forced a `.gitignore` entry on people who never
+asked for one.
+
+### Changed
+
+- **`mas.triage.storage`, defaulting to `internal`.** Triage now keeps its state
+  in VS Code's private per-workspace storage. **Nothing is written into your
+  project**, and there is nothing to gitignore. Set it to `repo` to opt into
+  `.agentview/triage/decisions.json` when you want the decision log committed
+  and shared with your team.
+- **Metrics are never repo-local**, even in `repo` mode. They are per-machine
+  counters and would only ever be merge noise, so `repo` mode adds exactly one
+  file to your project — the decision log, the part actually worth sharing.
+- **Existing logs are carried over.** A `.agentview/triage/decisions.json` left
+  by 0.9.0/0.9.1 is adopted on first read; the original is left in place for you
+  to delete, since it is your repo.
+- Changing the setting takes effect immediately — no window reload.
+- The Decisions tab now shows where the log actually lives, so it is never a
+  mystery.
+- Dropped the `.agentview/triage/metrics.json` line this project's own
+  `.gitignore` had needed.
+
+### Notes
+
+`mas.triage.enabled: false` has always prevented every write, and still does —
+intake, hooks, and holds all return before touching disk. Deleting an existing
+`.agentview/triage/` directory is safe at any time.
+
 ## [0.9.1] — 2026-08-27
 
 Closes the obvious hole in 0.9.0: **you often answer at the session, not in the

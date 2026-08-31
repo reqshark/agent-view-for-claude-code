@@ -11,6 +11,3 @@ webview-ui/dist/
 .agentview/board/selection.json
 .agentview/board/inbox/
 
-# Triage: decisions.json is the durable decision log (committable, it travels
-# with the repo); the metric counters are per-machine scratch.
-.agentview/triage/metrics.json

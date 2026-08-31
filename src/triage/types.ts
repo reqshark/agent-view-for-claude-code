@@ -227,6 +227,8 @@ export interface TriageState {
   holdEnabled: boolean;
   /** Hold needs the MAS hooks installed; without them nothing is suspended. */
   hooksInstalled: boolean;
+  /** Absolute path the Decision Log is written to, so it is never a mystery. */
+  decisionsPath: string;
   defaultScope: AnswerScope;
   defaultExpiry: AnswerExpiry;
   inbox: TriageRow[];

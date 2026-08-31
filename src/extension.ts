@@ -1021,11 +1021,32 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   // --- Triage (compress N sessions' questions down to the distinct ones) ---
-  // The Decision Log lives in the workspace so it travels with the repo; with no
-  // folder open it falls back to global storage rather than writing anywhere odd.
-  const triageStore = new TriageStore(
-    vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || context.globalStorageUri.fsPath,
-  );
+  /**
+   * Where Triage keeps its state. By default: nowhere near the user's project.
+   * VS Code gives every workspace a private storage directory, which is the
+   * right home for tool state — writing into someone's repo (and making them
+   * gitignore it) is not something a panel should do uninvited.
+   *
+   * `mas.triage.storage: "repo"` opts into `.agentview/triage/decisions.json`
+   * for teams who want the decision log committed and shared. Even then the
+   * metric counters stay internal: they are per-machine and would be nothing
+   * but merge noise, so repo mode adds exactly one file to the project.
+   */
+  function triagePaths() {
+    const internal = (context.storageUri ?? context.globalStorageUri).fsPath;
+    const metricsPath = path.join(internal, "triage", "metrics.json");
+    const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const repoLog = ws ? path.join(ws, ".agentview", "triage", "decisions.json") : undefined;
+    const wantRepo = cfg().get<string>("triage.storage", "internal") === "repo";
+    return {
+      decisionsPath:
+        wantRepo && repoLog ? repoLog : path.join(internal, "triage", "decisions.json"),
+      metricsPath,
+      // Adopt a log left in the repo by 0.9.0/0.9.1, which stored there always.
+      adoptFrom: repoLog,
+    };
+  }
+  const triageStore = new TriageStore(triagePaths);
   // The Decision Log partitions by repo root, so the key has to be the SAME
   // string every time a session asks. Managed agents know theirs; for the rest
   // we warm a cache off the store tick and fall back to the cwd until it lands.

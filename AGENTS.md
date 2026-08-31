@@ -74,7 +74,7 @@ src/                       extension host
                            intake.ts (questions from hooks/transcript/conflicts),
                            engine.ts (normalize -> dedup -> lookup -> route,
                            auto-answer policy, circuit breaker), store.ts
-                           (.agentview/triage/ decision log + metrics),
+                           (decision log + metrics; NOT repo-local by default),
                            hold.ts (parked blocking-hook responses),
                            panel.ts (host side of the mas.triage webview)
   types.ts                 shared domain types (AgentSession, AgentStatus, TokenUsage)
@@ -202,6 +202,11 @@ sizes equal unless you mean to change it.
   question, `conflict` questions are never auto-answered, an auto-answer always leaves a
   revocable record, and the error-rate breaker demotes auto-answer to dry run on its own.
   Widening any of these is a product decision, not a refactor.
+- **Don't write into the user's repo.** Triage keeps its state in VS Code's private
+  per-workspace storage by default (`context.storageUri`); `mas.triage.storage: "repo"`
+  is an opt-in for teams who want the decision log committed. Metrics are never
+  repo-local. Any new persistent state should follow the same rule — a panel that makes
+  people add a `.gitignore` line has taken something that isn't its.
 - **`~/.claude/settings.json` belongs to the user.** Triage's Hold hook lives there, so
   flipping `mas.triage.hold.enabled` only *offers* to rewrite the hooks — it must never
   write there unprompted. `installHooks` still backs the file up before its first

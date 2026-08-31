@@ -372,6 +372,19 @@ body {
   word-break: break-word;
 }
 
+.t-path {
+  font-size: 10px;
+  opacity: 0.5;
+  word-break: break-all;
+  margin: 4px 2px 0;
+  line-height: 1.4;
+}
+.t-path code {
+  background: var(--vscode-textCodeBlock-background);
+  padding: 0 3px;
+  border-radius: 3px;
+}
+
 /* ---- stats ---- */
 .t-stats {
   flex: 0 0 auto;

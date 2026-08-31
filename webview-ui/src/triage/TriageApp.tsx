@@ -588,11 +588,22 @@ export function TriageApp() {
         {tab === "decisions" &&
           (state.decisions.length === 0 ? (
             <div className="t-empty">
-              No decisions recorded yet. They are stored in{" "}
-              <code>.agentview/triage/decisions.json</code> — readable, diffable, and yours to edit.
+              No decisions recorded yet. Answer a question with a scope wider than <b>once</b> and it
+              lands here.
+              <p className="t-path" title={state.decisionsPath}>
+                Stored outside your project by default. Set <code>mas.triage.storage</code> to{" "}
+                <code>repo</code> to keep the log in <code>.agentview/triage/</code> and commit it.
+              </p>
             </div>
           ) : (
-            state.decisions.map((row) => <DecisionCard key={row.id} row={row} />)
+            <>
+              {state.decisions.map((row) => (
+                <DecisionCard key={row.id} row={row} />
+              ))}
+              <p className="t-path" title={state.decisionsPath}>
+                {state.decisionsPath}
+              </p>
+            </>
           ))}
       </div>
 
