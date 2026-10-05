@@ -3,6 +3,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { Registry } from "./registry";
 import { terminals } from "./terminals";
+import { agentNameForBranch } from "./naming";
 import { claudeVersion, versionAtLeast, NAME_FLAG_MIN_VERSION } from "./version";
 import { isGitRepo, repoRoot, createWorktree } from "./worktree";
 
@@ -14,6 +15,10 @@ export interface SpawnConfig {
   /** Per-session permission mode (e.g. "acceptEdits" for unattended runs).
    *  "acceptEdits" auto-accepts file edits but still prompts for Bash. */
   permissionMode?: string;
+  /** Give the agent Claude Code's plan tools (TaskCreate/TaskUpdate). Current
+   *  models only get them with CLAUDE_CODE_ENABLE_TODO_TOOLS=1, and plan
+   *  progress, the Session Board plan and Unattended's nudge all read them. */
+  planTools: boolean;
 }
 
 export interface SpawnRequest {
@@ -111,12 +116,14 @@ export async function spawnAgent(
   // Name the session after its branch so it has a stable, human-readable
   // address in ListAgents / SendMessage (cross-session messaging).
   const agentName = versionAtLeast(await claudeVersion(cfg.claudePath), NAME_FLAG_MIN_VERSION)
-    ? branch.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 48)
+    ? agentNameForBranch(branch)
     : undefined;
+  const env: Record<string, string> = { AGENTVIEW_BOARD_DIR: boardDir };
+  if (cfg.planTools) env.CLAUDE_CODE_ENABLE_TODO_TOOLS = "1";
   const terminal = vscode.window.createTerminal({
     name: `Claude Code ${branch}`,
     cwd: workdir,
-    env: { AGENTVIEW_BOARD_DIR: boardDir },
+    env,
   });
   terminal.show(true);
   terminal.sendText(buildCommand(cfg, sessionId, model, req.task, agentName));

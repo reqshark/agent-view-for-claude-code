@@ -4,6 +4,8 @@ import { AgentSession, AgentStatus } from "./types";
 import { discoverAgents } from "./discovery";
 import { projectsDir } from "./paths";
 import { Registry } from "./orchestrator/registry";
+import { agentNameForBranch } from "./orchestrator/naming";
+import { isLive, LiveSession, readSessionRegistry, sessionRegistryDir } from "./sessionRegistry";
 
 interface HookState {
   status: AgentStatus;
@@ -32,6 +34,44 @@ function isNeedsYou(s: AgentStatus): boolean {
 }
 
 /**
+ * Fold Claude Code's live session state into a discovered session. Returns the
+ * time the status was set when it applied (for the hook-vs-registry race), or
+ * undefined when the entry is too stale to trust.
+ *
+ * The registry knows busy / idle / waiting; the transcript knows finer shades
+ * (thinking, error, "ended on a question"), so the registry only overrides
+ * what it contradicts: busy lifts a quiet session to running, idle ends a
+ * stale running/thinking, waiting always wins and says what it waits on.
+ */
+function applyRegistry(a: AgentSession, r: LiveSession, now: number): number | undefined {
+  a.sessionName = r.name || a.sessionName;
+  a.sessionKind = r.kind === "background" ? "background" : "interactive";
+  a.entrypoint = r.entrypoint;
+  if (!isLive(r, now)) {
+    // The process is verifiably gone: whatever the transcript's recency
+    // window says, nobody is running this session any more.
+    if (r.alive === false && (a.status === "running" || a.status === "thinking") && now - a.lastActivity > 5000) {
+      a.status = "idle";
+    }
+    return undefined;
+  }
+  if (!r.status) return undefined;
+  const subsBusy = (a.subagents || []).some(
+    (s) => s.status === "running" || s.status === "waiting" || s.status === "thinking",
+  );
+  if (r.status === "waiting") {
+    a.status = "waiting";
+    a.waitingFor = r.waitingFor;
+  } else if (r.status === "busy") {
+    if (a.status !== "running" && a.status !== "thinking") a.status = "running";
+  } else if ((a.status === "running" || a.status === "thinking") && !subsBusy) {
+    a.status = "idle";
+  }
+  a.statusSource = "registry";
+  return r.statusUpdatedAt;
+}
+
+/**
  * Central source of truth for the agent fleet. Merges on-disk discovery
  * (pull) with hook events (push), and emits a change whenever either updates.
  */
@@ -47,6 +87,7 @@ export class AgentStore {
   // moment the agent does anything new.
   private readonly acks = new Map<string, number>();
   private watcher?: fs.FSWatcher;
+  private registryWatcher?: fs.FSWatcher;
   private pollTimer?: NodeJS.Timeout;
   private heartbeat?: NodeJS.Timeout;
   private debounce?: NodeJS.Timeout;
@@ -54,7 +95,7 @@ export class AgentStore {
 
   constructor(
     private readonly registry: Registry,
-    private readonly getConfig: () => { recentDays: number; recentHours: number },
+    private readonly getConfig: () => { recentDays: number; recentHours: number; sessionRegistry: boolean },
   ) {}
 
   start(): void {
@@ -65,6 +106,7 @@ export class AgentStore {
 
   dispose(): void {
     this.watcher?.close();
+    this.registryWatcher?.close();
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.heartbeat) clearInterval(this.heartbeat);
     if (this.debounce) clearTimeout(this.debounce);
@@ -118,29 +160,53 @@ export class AgentStore {
       managedLookup: (id) => {
         const m = this.registry.get(id);
         return m
-          ? { worktreePath: m.worktreePath, label: m.label, groupId: m.groupId, groupRole: m.groupRole }
+          ? {
+              worktreePath: m.worktreePath,
+              label: m.label,
+              groupId: m.groupId,
+              groupRole: m.groupRole,
+              spawnName: agentNameForBranch(m.branch),
+            }
           : undefined;
       },
     });
+
+    // Claude Code's live session registry (zero-config, covers sessions the
+    // hooks never see: other windows, background jobs, older hook installs).
+    const now = Date.now();
+    const registry = cfg.sessionRegistry ? readSessionRegistry() : undefined;
+    const registryAt = new Map<string, number>();
+    if (registry) {
+      for (const a of found) {
+        const r = registry.get(a.sessionId);
+        if (!r) continue;
+        const at = applyRegistry(a, r, now);
+        if (at !== undefined) registryAt.set(a.sessionId, at);
+      }
+    }
 
     // Hook status is authoritative over the JSONL heuristic, EXCEPT when it's
     // stale or the transcript shows newer activity. Without the matching Stop
     // (server restart, missed event, port held by another window, or a session
     // resumed via a path the hook server never saw) a hook status would
     // otherwise pin the agent forever — including terminal idle/done/error.
+    // Against the registry, whichever changed more recently wins.
     const liveIds = new Set<string>();
     for (const a of found) {
       liveIds.add(a.sessionId);
       const hs = this.hookStatus.get(a.sessionId);
       if (!hs) continue;
-      const stale = Date.now() - hs.at > HOOK_STATUS_TTL_MS;
+      const stale = now - hs.at > HOOK_STATUS_TTL_MS;
       const supersededByJsonl = a.lastActivity > hs.at + 1000;
       if (stale || supersededByJsonl) {
         this.hookStatus.delete(a.sessionId); // forget it; rely on the heuristic
         continue;
       }
+      const regAt = registryAt.get(a.sessionId);
+      if (regAt !== undefined && regAt >= hs.at) continue;
       a.status = hs.status;
       a.statusSource = "hook";
+      if (hs.status !== "waiting") a.waitingFor = undefined;
     }
 
     // Carry the live hook-driven "now doing X" phrase across rediscovery
@@ -184,6 +250,7 @@ export class AgentStore {
     a.acknowledged = true;
     a.status = "idle";
     a.lastError = undefined;
+    a.waitingFor = undefined;
   }
 
   /** Manually dismiss an agent from "needs you" until it next does something. */
@@ -237,6 +304,7 @@ export class AgentStore {
       a.status = status;
       a.statusSource = "hook";
       a.acknowledged = false;
+      if (status !== "waiting") a.waitingFor = undefined;
       this._onDidChange.fire();
     } else {
       this.scheduleRefresh();
@@ -269,6 +337,16 @@ export class AgentStore {
     } catch {
       // Recursive fs.watch is unsupported on Linux — fall back to polling.
       this.pollTimer = setInterval(() => this.refresh(), 4000);
+    }
+    // A status flip (busy -> waiting) rewrites only the registry entry, not the
+    // transcript, so watch it too. Flat directory: no recursion needed. Absent
+    // on older CLIs — the heartbeat still covers everything.
+    try {
+      this.registryWatcher = fs.watch(sessionRegistryDir(), () => {
+        if (this.getConfig().sessionRegistry) this.scheduleRefresh();
+      });
+    } catch {
+      /* no registry directory */
     }
   }
 

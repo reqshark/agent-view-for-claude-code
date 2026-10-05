@@ -24,6 +24,7 @@ import {
   remoteWebUrl,
   changedLineCount,
 } from "./orchestrator/worktree";
+import * as fs from "fs";
 import * as path from "path";
 import { execFile } from "child_process";
 import { BaseContentProvider, openReviewDiff, BASE_SCHEME, DiffResolver } from "./review/diff";
@@ -76,13 +77,14 @@ function spawnConfig(): SpawnConfig {
     worktreeRoot: c.get<string>("worktreeRoot", ".mas/worktrees"),
     spawnExtraFlags: c.get<string[]>("spawnExtraFlags", []),
     permissionMode: unattended && acceptEdits ? "acceptEdits" : undefined,
+    planTools: c.get<boolean>("spawn.planTools", true),
   };
 }
 
 function triageConfig(): TriageConfig {
   const c = cfg();
   return {
-    enabled: c.get<boolean>("triage.enabled", true),
+    enabled: c.get<boolean>("triage.enabled", false),
     dedupThreshold: c.get<number>("triage.dedup.threshold", 0.7),
     lookupThreshold: c.get<number>("triage.lookup.threshold", 0.8),
     autoAnswerEnabled: c.get<boolean>("triage.autoAnswer.enabled", true),
@@ -116,6 +118,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const store = new AgentStore(registry, () => ({
     recentDays: cfg().get<number>("recentDays", 7),
     recentHours: cfg().get<number>("recentHours", 24),
+    sessionRegistry: cfg().get<boolean>("sessionRegistry.enabled", true),
   }));
 
   // Race state held by the host (the webview renders it; the store drives live
@@ -1113,10 +1116,56 @@ export function activate(context: vscode.ExtensionContext): void {
         : vscode.ConfigurationTarget.Global;
       await cfg().update("triage.autoAnswer.dryRun", on, target);
     },
+    enable: () => setTriageEnabled(true),
   });
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(TriageViewProvider.viewId, triageView),
+    // The panel's state (on/off, dry run, AI) is read from settings — re-send
+    // it whenever one of them changes, wherever the change came from.
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("mas.triage")) triageView.refresh();
+    }),
   );
+
+  /**
+   * Triage is opt-in. Flip it where it is actually set: a workspace value
+   * would shadow a user-level change, so update that one if it exists.
+   */
+  async function setTriageEnabled(on: boolean): Promise<void> {
+    const info = cfg().inspect<boolean>("triage.enabled");
+    const target =
+      info?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    await cfg().update("triage.enabled", on, target);
+    if (on) void vscode.commands.executeCommand("mas.triage.focus");
+  }
+
+  /**
+   * 0.9.x had Triage on by default; 0.10 makes it opt-in. Someone who actually
+   * used it (answered in the inbox, or has a decision log) and never set the
+   * setting would silently lose it on upgrade — ask them once instead. Reads
+   * only: nothing is written unless they choose to keep it.
+   */
+  function offerTriageKeepOn(): void {
+    const NOTICE_KEY = "mas.triage.optInNotice";
+    if (context.globalState.get<boolean>(NOTICE_KEY)) return;
+    const info = cfg().inspect<boolean>("triage.enabled");
+    if (info?.globalValue !== undefined || info?.workspaceValue !== undefined) return; // chose already
+    const p = triagePaths();
+    const hasLog = fs.existsSync(p.decisionsPath) || (!!p.adoptFrom && fs.existsSync(p.adoptFrom));
+    const m = triageStore.readMetrics();
+    if (!hasLog && m.clustersAnswered + m.autoAnswers === 0) return; // never used it
+    void context.globalState.update(NOTICE_KEY, true);
+    void vscode.window
+      .showInformationMessage(
+        "Agent View: Triage is now off by default. You've used it before — keep it on?",
+        "Keep Triage on",
+        "Leave it off",
+      )
+      .then((pick) => {
+        if (pick === "Keep Triage on") void setTriageEnabled(true);
+      });
+  }
+  offerTriageKeepOn();
 
   /**
    * Hold is implemented by a hook in the user's ~/.claude/settings.json, so
@@ -1358,11 +1407,12 @@ export function activate(context: vscode.ExtensionContext): void {
       name === "PostToolUse" ||
       name === "PostToolUseFailure" ||
       name === "Stop" ||
-      name === "SubagentStop" ||
       name === "SessionEnd"
     ) {
       // Tool finished (or turn ended) — clear the live phrase so the UI doesn't
       // keep showing "Running: …" after it's done; falls back to lastAction.
+      // Not on SubagentStop: it carries the parent's id, and a background
+      // subagent can finish while the parent is mid-tool.
       store.applyLiveAction(id, undefined);
     }
     },
@@ -1411,6 +1461,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("mas.refresh", () => store.refresh()),
     vscode.commands.registerCommand("mas.openCanvas", () => void openCanvas()),
     vscode.commands.registerCommand("mas.openTriage", () => triageView.focus()),
+    vscode.commands.registerCommand("mas.triage.enable", () => setTriageEnabled(true)),
+    vscode.commands.registerCommand("mas.triage.disable", async () => {
+      await setTriageEnabled(false);
+      vscode.window.showInformationMessage(
+        "Agent View: Triage is off. Your decision log is kept — turn it back on any time.",
+      );
+    }),
     vscode.commands.registerCommand("mas.triage.refresh", () => store.refresh()),
     vscode.commands.registerCommand("mas.triage.exportDecisions", () =>
       void exportDecisions().catch(reportErr),

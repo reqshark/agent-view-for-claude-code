@@ -3,6 +3,7 @@ import * as path from "path";
 import { AgentStore } from "../store";
 import { AgentSession } from "../types";
 import { claudeHome } from "../paths";
+import { PlanTracker } from "../util/planTracker";
 import {
   TeamMember,
   TeamMessage,
@@ -63,7 +64,7 @@ function readTeammates(subDir: string): TeammateMeta[] {
 const MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 
 interface LeadScan {
-  /** The most recent TodoWrite `todos` array (the shared-task-list fallback). */
+  /** The lead's own plan — TodoWrite or Task tools (the shared-task-list fallback). */
   todos?: any[];
   /** SendMessage calls the lead issued, oldest first. */
   sends: TeamMessage[];
@@ -91,7 +92,7 @@ function scanLeadTranscript(jsonlPath: string): LeadScan {
   } catch {
     return { sends };
   }
-  let todos: any[] | undefined;
+  const plan = new PlanTracker();
   for (const line of raw.split("\n")) {
     if (!line) continue;
     let o: any;
@@ -101,13 +102,12 @@ function scanLeadTranscript(jsonlPath: string): LeadScan {
       continue;
     }
     if (o?.isSidechain === true) continue; // the lead's own chain, not a teammate's
+    plan.feed(o);
     const content = o?.message?.content;
     if (!Array.isArray(content)) continue;
     for (const b of content) {
       if (b?.type !== "tool_use") continue;
-      if (b.name === "TodoWrite" && Array.isArray(b.input?.todos)) {
-        todos = b.input.todos;
-      } else if (b.name === "SendMessage") {
+      if (b.name === "SendMessage") {
         // Observed inputs duplicate both alias pairs (to/recipient,
         // message/content) — read either.
         const input = b.input || {};
@@ -128,7 +128,7 @@ function scanLeadTranscript(jsonlPath: string): LeadScan {
       }
     }
   }
-  return { todos, sends };
+  return { todos: plan.items(), sends };
 }
 
 /** Parse the TodoWrite list into tasks, extracting owner + dependency edges from
@@ -201,6 +201,10 @@ function readWorkflowRuns(subDir: string): TeamWorkflowRun[] {
 //   config.json (documented: members[] of {name, agent_id, agent_type}) and
 //   tasks/<team>/*.json (documented) were NOT observed on that version — both
 //   readers below stay defensive: the store is experimental and shifts often.
+// Re-captured on 2.1.289: teams are named `session-<first 8 of lead id>` and
+//   config.json is back, camelCase: { name, createdAt, leadAgentId,
+//   leadSessionId, members: [{ agentId, name, agentType, joinedAt, cwd,
+//   backendType, tmuxPaneId, subscriptions }] }.
 // Everything here is READ-ONLY: Claude Code owns these files and rewrites them.
 
 /** ~/.claude/teams or ~/.claude/tasks present (native Agent Teams store). */
@@ -220,6 +224,8 @@ function readJsonFile(p: string): any | undefined {
 
 interface NativeTeamData {
   teamName: string;
+  /** Session id of the team lead, when config.json records it (2.1.2xx+). */
+  leadSessionId?: string;
   /** Roster from config.json, when the version writes one. */
   members?: { name: string; agentId?: string; agentType?: string }[];
   /** Shared task list from ~/.claude/tasks/<team>/, when present. */
@@ -324,7 +330,7 @@ function readNativeTasks(teamName: string): { tasks: TeamTask[]; mtime: number }
       : /complete|done/i.test(rawStatus)
         ? "completed"
         : "pending";
-    const deps = [o.depends_on, o.dependsOn, o.blocked_by].find(Array.isArray) || [];
+    const deps = [o.blockedBy, o.depends_on, o.dependsOn, o.blocked_by].find(Array.isArray) || [];
     tasks.push({
       id: String(o.id ?? o.task_id ?? f.replace(/\.json$/, "")),
       content: content.replace(/\s+/g, " ").trim().slice(0, 200),
@@ -360,8 +366,8 @@ function readNativeStore(): NativeTeamData[] {
         .filter((m: any) => m && typeof m.name === "string" && m.name)
         .map((m: any) => ({
           name: m.name,
-          agentId: typeof m.agent_id === "string" ? m.agent_id : undefined,
-          agentType: typeof m.agent_type === "string" ? m.agent_type : undefined,
+          agentId: [m.agentId, m.agent_id].find((v: unknown): v is string => typeof v === "string"),
+          agentType: [m.agentType, m.agent_type].find((v: unknown): v is string => typeof v === "string"),
         }));
     }
     const mailboxAgents: string[] = [];
@@ -384,8 +390,12 @@ function readNativeStore(): NativeTeamData[] {
       }
     }
     const nativeTasks = readNativeTasks(d.name);
+    const leadSessionId = [cfg?.leadSessionId, cfg?.lead_session_id].find(
+      (v: unknown): v is string => typeof v === "string" && v.length > 0,
+    );
     out.push({
       teamName: d.name,
+      leadSessionId,
       members,
       tasks: nativeTasks?.tasks,
       tasksMtime: nativeTasks?.mtime,
@@ -471,10 +481,16 @@ export function buildTeamSnapshot(store: AgentStore): TeamSnapshot {
     const roster = readTeammates(sidecarSubagentsDir(s));
     if (roster.length === 0) continue;
     const scan = scanLeadTranscript(s.jsonlPath);
-    const match = nativeTeams.find(
-      (n) =>
-        !claimed.has(n.teamName) && nativeTeamNames(n).some((name) => roster.some((r) => r.name === name)),
-    );
+    // The lead's own session id is exact; roster-name overlap is the fallback
+    // for versions whose config.json doesn't record it.
+    const match =
+      nativeTeams.find((n) => !claimed.has(n.teamName) && n.leadSessionId === s.sessionId) ||
+      nativeTeams.find(
+        (n) =>
+          !claimed.has(n.teamName) &&
+          !n.leadSessionId &&
+          nativeTeamNames(n).some((name) => roster.some((r) => r.name === name)),
+      );
     if (match) claimed.add(match.teamName);
     if (match?.tasks?.length || match?.members?.length) usedNative = true;
     teams.push({
@@ -509,9 +525,12 @@ export function buildTeamSnapshot(store: AgentStore): TeamSnapshot {
       .sort((a, b) => a.name.localeCompare(b.name));
     if (roster.length === 0 && n.messages.length === 0 && !n.tasks?.length) continue;
     usedNative = true;
+    // In-process teammates leave no sidecar roster, but config.json still
+    // names the lead — attach the team to it when we can see that session.
+    const lead = n.leadSessionId ? sessions.find((x) => x.sessionId === n.leadSessionId) : undefined;
     teams.push({
-      leadSessionId: `native:${n.teamName}`,
-      leadLabel: `Team ${n.teamName}`,
+      leadSessionId: lead?.sessionId ?? `native:${n.teamName}`,
+      leadLabel: lead?.label ?? `Team ${n.teamName}`,
       teamName: n.teamName,
       members: roster,
       tasks: n.tasks ?? [],

@@ -34,6 +34,26 @@ export function statusIcon(status: AgentStatus): vscode.ThemeIcon {
   return new vscode.ThemeIcon(m.icon, new vscode.ThemeColor(m.color));
 }
 
+/**
+ * Short chip for a permission mode worth noticing, or undefined. "auto" is
+ * Claude Code's default for every session since 2.1.284, and "default" /
+ * "manual" are the old default, so none of them earn a chip.
+ */
+export function permissionModeLabel(mode: string | undefined): string | undefined {
+  switch (mode) {
+    case "plan":
+      return "plan mode";
+    case "acceptEdits":
+      return "accept edits";
+    case "bypassPermissions":
+      return "bypass perms";
+    case "dontAsk":
+      return "don't ask";
+    default:
+      return undefined;
+  }
+}
+
 /** Trim a string to a max length, adding an ellipsis when cut. */
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
@@ -102,6 +122,54 @@ export function humanizeTool(name: string, input: unknown): string {
     }
     case "ListAgents":
       return "Listing reachable agents";
+    // Tools Claude Code added after 2.1.196 that agents call routinely.
+    case "Workflow": {
+      const named = typeof o.script === "string" ? /\bname:\s*['"]([^'"]+)['"]/.exec(o.script) : null;
+      const wf = oneLine(o.name || (named && named[1]) || o.scriptPath, 50);
+      return `Running workflow${wf ? ": " + wf : ""}`;
+    }
+    case "Monitor": {
+      const what = oneLine(o.description || o.command, 70);
+      return `Watching${what ? ": " + what : " a background task"}`;
+    }
+    case "TaskCreate": {
+      const t = oneLine(o.subject || o.description || o.content, 60);
+      return `Planning${t ? ": " + t : ""}`;
+    }
+    case "TaskUpdate": {
+      const st = oneLine(o.status, 20);
+      return `Updating the plan${st ? " (" + st.replace(/_/g, " ") + ")" : ""}`;
+    }
+    case "TaskList":
+    case "TaskGet":
+      return "Checking the plan";
+    case "TaskStop":
+      return "Stopping a background task";
+    case "TaskOutput":
+      return "Reading a background task's output";
+    case "SubagentHandback":
+      return "Handing results back";
+    case "SendUserMessage":
+      return "Messaging you";
+    case "Skill": {
+      const sk = oneLine(o.skill || o.command || o.name, 50);
+      return `Using skill${sk ? ": " + sk : ""}`;
+    }
+    case "EnterWorktree":
+      return "Moving into a worktree";
+    case "ExitWorktree":
+      return "Leaving the worktree";
+    case "EnterPlanMode":
+      return "Planning";
+    case "ExitPlanMode":
+      return "Presenting a plan";
+    case "ScheduleWakeup":
+    case "CronCreate":
+      return "Scheduling a wake-up";
+    case "ToolSearch":
+      return "Loading tools";
+    case "PushNotification":
+      return "Sending you a notification";
     default: {
       const detail = oneLine(
         o.command || o.file_path || o.path || o.pattern || o.description || o.prompt || o.url || o.query,

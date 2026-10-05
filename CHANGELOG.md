@@ -3,6 +3,102 @@
 All notable changes to **Agent View for Claude Code** are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] — 2026-10-06
+
+The Native Signals release. Claude Code moved from 2.1.196 to 2.1.289 since Agent
+View last caught up, and a lot of what Agent View used to *infer* is now something
+Claude Code *records*. This release reads it, and fixes what the drift broke.
+
+### Added
+
+- **Live status from Claude Code's own session state.** Claude Code keeps a registry
+  of running sessions in `~/.claude/sessions/` — the same source `claude agents` reads.
+  Agent View now reads it (read-only) for **busy / idle / waiting** with no hooks
+  installed, across other windows, the Claude Code extension and background sessions.
+  Entries left by crashed processes are ignored: the pid must be alive *and* still
+  belong to the process that wrote the entry (its start time is checked, as Claude
+  Code does, so a reused pid can't revive a dead session); where the pid can't be
+  checked, the entry must be fresh. Against hook events, whichever changed most
+  recently wins. Off with `mas.sessionRegistry.enabled`.
+- **The exact ask.** A waiting session shows what it is waiting on, verbatim, in the
+  tree, the Detail view and the "Needs you" reason.
+- **Your `/rename` titles.** A title you give a session wins over the generated one.
+  The `--name` Agent View passes at spawn is recognised and not mistaken for yours.
+- **PR, permission-mode and background chips.** `PR #123` when Claude Code linked a
+  pull request (click to open it in the Detail view), `plan mode` / `accept edits` /
+  `bypass perms` for non-default modes, `bg` for background sessions. The tooltip adds
+  the session's messaging address, where it runs, and its cost.
+- **API trouble, named.** A session stuck retrying the API shows "API retry 3/10:
+  Overloaded" instead of its last action, and turns red with Claude Code's own message
+  when a call fails for good (retries spent, "You've hit your session limit", signed
+  out).
+- **Plan progress from the Task tools.** Current models plan with `TaskCreate` /
+  `TaskUpdate`, not `TodoWrite`. Plan chips, Session Board plans and the Teams fallback
+  task list now read both. The plan is read from the whole transcript (incrementally),
+  since the Task tools build it one call at a time and a tail read of a long session
+  would see only part of it.
+- **`mas.spawn.planTools`** (default on): agents Agent View spawns get
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`. Since 2.1.268 Claude Code offers plan tools on
+  current models (Opus 4.8+, Sonnet 5+, Fable) only with it set — without them, plan
+  progress was blank and Unattended's stuck-agent nudge could never fire.
+- Readable phrases for the tools agents now call routinely: Workflow, Monitor,
+  TaskCreate / TaskUpdate / TaskList / TaskStop, Skill, SubagentHandback,
+  Enter/ExitWorktree, ExitPlanMode, ScheduleWakeup and others.
+
+### Changed
+
+- **Triage is opt-in.** `mas.triage.enabled` now defaults to off, and the Triage view
+  starts collapsed on a fresh install, so the sidebar opens as Agents over Detail. Turn
+  it on from the panel's **Turn on Triage** button or **Agent View: Turn On Triage**;
+  **Turn Off Triage** sits in the panel's `...` menu. While off it records and writes
+  nothing. If you used Triage under 0.9.x without ever setting the option, Agent View
+  asks once whether to keep it on, so an upgrade never takes it away silently.
+- **Cost now matches Claude Code's `/cost`.** Every API message is counted once (a
+  message spans several transcript lines that all repeat its usage — output tokens were
+  counted 2-3x), across the whole transcript (cache reads were previously counted for
+  the last turn only), at current list prices: Opus 5.5 $4/$20, Opus 4.x/5 $5/$25,
+  Sonnet 5/5.5 $2/$10, Fable 5.1 $10/$50, Haiku 4.5 $1/$5, with 1-hour cache writes at
+  2x input. Subagents are included. Claude Code's own per-process cost snapshots are
+  folded in too — they see calls no transcript records (the auto-mode safety classifier,
+  compaction) — and the larger of the two figures wins. Checked against those
+  snapshots, single-run sessions agree within 3%. Across resumes Agent View counts the
+  whole session, which `/cost` does not. Unattended's budget cap and the Shift Report
+  use the new figure. **If you set `mas.unattended.maxCostUsd`, revisit it** — the old
+  estimate missed most cache reads, so on long sessions the real figure is often
+  several times higher and an old cap may pause agents sooner than you expect.
+  `mas.unattended.pricing` now takes a `fable` key and is only needed for negotiated
+  rates.
+- **AI helpers run as bare text models.** The Attention Router, Merge Advisor, Shift
+  Report narrative and Triage's judge now call `claude -p` with no tools, no MCP
+  servers or skills, a one-line system prompt and no session file
+  (`--tools "" --strict-mcp-config --disable-slash-commands --system-prompt …
+  --no-session-persistence`, on CLI 2.1.143+). They only ever judged text they were
+  handed. This also closes a gap: since 2.1.285, print mode on third-party providers
+  can default to auto mode, which would have let a prompt-injected transcript run
+  tools. Context per call drops from tens of thousands of tokens to a few hundred.
+  Helper runs no longer show up as agents in the fleet.
+- Agent Teams: the roster reads `config.json`'s current camelCase fields (`agentId`,
+  `agentType`), and a team is matched to its lead by `leadSessionId` when recorded
+  (roster-name overlap is still the fallback). A team whose teammates run in-process
+  now attaches to its lead's session, and the shared task list reads dependencies
+  from `blockedBy`, the key Claude Code actually writes.
+
+### Fixed
+
+- **`agent_needs_input` / `agent_completed` notifications** (2.1.198+) flipped
+  sessions to *running*. They are emitted by Claude Code's fleet view about a
+  background job but carry the fleet view's own session id, so they no longer change
+  any status — the job's own state comes from the registry. MCP elicitation prompts
+  read as waiting, and notification kinds that say nothing about state (like
+  `auth_success`) no longer flip a session to running.
+- **A finishing subagent no longer marks its parent idle** or clears its "now doing"
+  line. Subagents run in the background by default since 2.1.198, so `SubagentStop`
+  says nothing about the parent.
+- **Compaction summaries are no longer treated as something you typed.** They don't
+  become a session's label, a "human prompt" tick on the Scroll, or a pages-long user
+  message in the Detail view, which now shows a "Context compacted" marker instead.
+  Background-task notifications are likewise no longer counted as prompts.
+
 ## [0.9.2] — 2026-08-27
 
 Triage stops writing into your project.

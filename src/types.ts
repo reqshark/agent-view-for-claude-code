@@ -1,5 +1,7 @@
 // Shared domain types for the MAS extension host.
 
+import type { BilledUsage } from "./pricing";
+
 export type AgentStatus =
   | "idle"
   | "running"
@@ -73,8 +75,25 @@ export interface AgentSession {
   agentType?: string;
   /** Discovered child subagents (populated for top-level sessions). */
   subagents?: AgentSession[];
-  /** Source that last set the status: "hook" is authoritative over "jsonl". */
-  statusSource?: "hook" | "jsonl";
+  /** Source that last set the status. "hook" and "registry" (Claude Code's own
+   *  live session state) are authoritative over the "jsonl" heuristic. */
+  statusSource?: "hook" | "registry" | "jsonl";
   /** User manually dismissed this from "needs you" (until it next acts). */
   acknowledged?: boolean;
+  /** Billed usage per model (this transcript only, each message once). */
+  usage?: Record<string, BilledUsage>;
+  /** Estimated USD at list prices, including this session's subagents. */
+  costUsd?: number;
+  /** Pull request Claude Code linked to the session. */
+  pr?: { number?: number; url: string };
+  /** Permission mode the session last recorded ("auto", "plan", "acceptEdits", …). */
+  permissionMode?: string;
+  /** Messaging address (SendMessage / ListAgents name). */
+  sessionName?: string;
+  /** What the session is blocked on, verbatim from Claude Code's session state. */
+  waitingFor?: string;
+  /** "background" for `claude --bg` / agent-view sessions (registry only). */
+  sessionKind?: "interactive" | "background";
+  /** Where the session runs: "cli", "claude-vscode", "sdk-cli", … (registry only). */
+  entrypoint?: string;
 }

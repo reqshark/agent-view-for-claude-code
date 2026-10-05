@@ -17,15 +17,24 @@ export function mapHookEvent(event: any): AgentStatus | undefined {
       return "running";
     case "Notification": {
       const t: string = event?.notification_type || "";
-      // permission / idle prompts mean the agent is blocked on the user
-      if (t.includes("permission") || t.includes("idle") || t === "") return "waiting";
-      return "running";
+      // `agent_needs_input` / `agent_completed` (2.1.198+) come from the fleet
+      // view and describe a background job, but carry the session_id of the
+      // process that emitted them — applying them would flip the wrong session.
+      // The registry reports those jobs' own state directly.
+      if (t.startsWith("agent_")) return undefined;
+      // Blocked on the user: permission / idle prompts, MCP elicitation forms.
+      if (t === "" || /permission|idle|elicitation/.test(t)) return "waiting";
+      return undefined; // auth_success and future kinds say nothing about state
     }
     case "PostToolUseFailure":
       return "error";
     case "Stop":
-    case "SubagentStop":
       return "idle";
+    case "SubagentStop":
+      // Carries the PARENT's session_id, and subagents run in the background by
+      // default (2.1.198+) — one finishing says nothing about whether the parent
+      // is still working. Its own Stop does.
+      return undefined;
     case "SessionEnd":
       return "done";
     case "TeammateIdle":

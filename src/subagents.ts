@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { AgentSession, emptyTokens } from "./types";
 import { parseTranscript } from "./transcript";
+import { priceUsageMap } from "./pricing";
 import { sessionSidecarDir } from "./paths";
 
 /** Recursively collect `agent-*.jsonl` files under a directory. */
@@ -70,6 +71,8 @@ export function findSubagents(
       filesTouched: summary?.filesTouched,
       plan: summary?.plan,
       lastError: summary?.lastError,
+      usage: summary?.usage,
+      costUsd: priceUsageMap(summary?.usage),
       managed: false,
       kind: "subagent",
       parentId: sessionId,

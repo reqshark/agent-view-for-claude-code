@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { post } from "./vscodeApi";
-import { Dot, STATUS_LABEL, fmtTok, relTime, shortAgentType } from "./ui";
+import { Dot, STATUS_LABEL, fmtTok, permissionModeLabel, relTime, shortAgentType } from "./ui";
 import { RaceView } from "./RaceView";
 import { FanoutView } from "./FanoutView";
 import { ReviewView } from "./ReviewView";
@@ -30,10 +30,17 @@ function Markdown({ text }: { text: string }) {
   return <div className="md" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
+const SOURCE_TITLE: Record<NonNullable<AgentSummary["statusSource"]>, string> = {
+  hook: "from Claude Code hooks",
+  registry: "from Claude Code's live session state",
+  jsonl: "inferred from transcript",
+};
+
 function metaLine(a: AgentSummary): string {
   const bits: string[] = [];
   if (a.model) bits.push(a.model.replace(/^claude-/, ""));
   bits.push(`${fmtTok(a.tokensTotal)} tok`);
+  if (a.costUsd && a.costUsd >= 0.01) bits.push(`~$${a.costUsd.toFixed(2)}`);
   bits.push(relTime(a.lastActivity));
   return bits.join(" · ");
 }
@@ -239,6 +246,11 @@ export function App() {
               </div>
               <div className="focus-meta">
                 <span className={"status-pill " + focused.status}>{STATUS_LABEL[focused.status]}</span>
+                {focused.status === "waiting" && focused.waitingFor && (
+                  <span className="status-pill waiting reason" title={focused.waitingFor}>
+                    {focused.waitingFor}
+                  </span>
+                )}
                 {focused.plan && focused.plan.total > 0 && (
                   <span className="status-pill plan reason" title={focused.plan.current || "plan progress"}>
                     {focused.plan.done}/{focused.plan.total}
@@ -255,8 +267,25 @@ export function App() {
                     {focused.activeSubagents} subagent{focused.activeSubagents === 1 ? "" : "s"} working
                   </span>
                 )}
-                <span className="src" title={focused.statusSource === "hook" ? "from Claude Code hooks" : "inferred from transcript"}>
-                  {focused.statusSource === "hook" ? "live" : "guessed"}
+                {permissionModeLabel(focused.permissionMode) && (
+                  <span className="status-pill" title={`Permission mode: ${focused.permissionMode}`}>
+                    {permissionModeLabel(focused.permissionMode)}
+                  </span>
+                )}
+                {focused.sessionKind === "background" && (
+                  <span className="status-pill" title="Background session (claude --bg / agent view)">background</span>
+                )}
+                {focused.pr && (
+                  <button
+                    className="status-pill link"
+                    title={focused.pr.url}
+                    onClick={() => post({ type: "openPullRequest", sessionId: focused.sessionId })}
+                  >
+                    PR{focused.pr.number ? " #" + focused.pr.number : ""}
+                  </button>
+                )}
+                <span className="src" title={SOURCE_TITLE[focused.statusSource || "jsonl"]}>
+                  {!focused.statusSource || focused.statusSource === "jsonl" ? "guessed" : "live"}
                 </span>
                 <span>{metaLine(focused)}</span>
               </div>

@@ -8,13 +8,15 @@ import {
   readParsedLines,
   tsOf,
 } from "../transcript";
+import { PlanTracker } from "../util/planTracker";
 
 // The Session Board materializer: projects one session transcript into board
 // objects using mechanical promotion rules (no LLM). The rules were derived by
 // hand-replaying a real 3.5h session (CaaC probe 01):
 //   - each human prompt opens an episode (the spine)
 //   - numbered list lines in a prompt become requirement chips
-//   - TodoWrite snapshots collapse into one living plan object per episode
+//   - plan updates (TodoWrite snapshots, or the Task tools current models use)
+//     collapse into one living plan object per episode
 //   - "[branch hash] subject" tool results become commit milestones
 //   - verification media/checks become evidence chips
 //   - everything else collapses into per-episode machinery counts, where
@@ -23,6 +25,9 @@ import {
 /** Tools whose input names a file (mirrors transcript.EDIT_TOOLS, which is
  *  intentionally private — the board needs the file path, not just the class). */
 const FILE_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit", "str_replace_based_edit_tool"]);
+
+/** Tools that write the agent's own plan (folded in by PlanTracker). */
+const PLAN_TOOLS = new Set(["TodoWrite", "TaskCreate", "TaskUpdate"]);
 
 /** Bash calls that read as verification rather than plumbing. */
 const EVIDENCE_RE = /(screenshot|record|video|frame|ffmpeg|simctl|playwright|\btest\b|typecheck|lint|vitest|jest|pytest)/i;
@@ -212,6 +217,7 @@ export function materializeSession(
   const episodes: BoardEpisode[] = [];
   const fileEdits = new Map<string, number>();
   const toolNameById = new Map<string, string>();
+  const planTracker = new PlanTracker();
   const totals = { events: 0, toolCalls: 0, edits: 0, prompts: 0, words: 0, commits: 0, messages: 0 };
   let startTs = 0;
   let endTs = 0;
@@ -230,6 +236,14 @@ export function materializeSession(
       if (ts > endTs) endTs = ts;
     }
     totals.events += classifyLine(line).length;
+    if (planTracker.feed(line)) {
+      const ep = current();
+      const items: BoardPlanItem[] = (planTracker.items() || []).map((i) => ({
+        content: i.content.replace(/\s+/g, " ").slice(0, 90),
+        status: i.status,
+      }));
+      ep.plan = { items, snapshots: (ep.plan?.snapshots || 0) + 1 };
+    }
 
     if (line.type === "user") {
       if (isHumanPrompt(line)) {
@@ -304,15 +318,8 @@ export function materializeSession(
             totals.toolCalls++;
             if (typeof b.id === "string") toolNameById.set(b.id, b.name);
             const input = b.input || {};
-            if (b.name === "TodoWrite" && Array.isArray(input.todos)) {
-              const items: BoardPlanItem[] = input.todos
-                .filter((t: any) => typeof t?.content === "string")
-                .map((t: any) => ({
-                  content: t.content.replace(/\s+/g, " ").slice(0, 90),
-                  status:
-                    t.status === "completed" || t.status === "in_progress" ? t.status : "pending",
-                }));
-              ep.plan = { items, snapshots: (ep.plan?.snapshots || 0) + 1 };
+            if (PLAN_TOOLS.has(b.name)) {
+              // Plan changes are applied once per line by the PlanTracker above.
             } else if (FILE_TOOLS.has(b.name)) {
               totals.edits++;
               ep.machinery.edits++;

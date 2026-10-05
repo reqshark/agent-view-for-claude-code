@@ -9,6 +9,8 @@ export interface TriageViewDeps {
   focusAgent(sessionId: string): void;
   /** Flip mas.triage.autoAnswer.dryRun from the panel's toggle. */
   setDryRun(on: boolean): Promise<void>;
+  /** Turn Triage on from the panel's off-state button (it is opt-in). */
+  enable(): Promise<void>;
 }
 
 /**
@@ -80,6 +82,9 @@ export class TriageViewProvider implements vscode.WebviewViewProvider {
         case "setDryRun":
           void this.deps.setDryRun(msg.on).then(() => this.postState());
           break;
+        case "enable":
+          void this.deps.enable().then(() => this.postState());
+          break;
       }
     });
 
@@ -93,6 +98,11 @@ export class TriageViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Bring the Triage view forward (used by the command + notifications). */
+  /** Re-send state after a setting change (e.g. Triage turned on or off). */
+  refresh(): void {
+    this.schedulePost();
+  }
+
   focus(): void {
     void vscode.commands.executeCommand(`${TriageViewProvider.viewId}.focus`);
   }

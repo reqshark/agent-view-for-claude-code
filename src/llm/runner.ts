@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { claudeVersion, LEAN_HELPER_MIN_VERSION, versionAtLeast } from "../orchestrator/version";
 
 export interface LlmOptions {
   claudePath: string;
@@ -8,17 +9,37 @@ export interface LlmOptions {
 }
 
 /**
+ * Every helper is a pure judgment over text the prompt already carries, so it
+ * runs as a bare text model: no tools (transcripts are untrusted input, and
+ * since 2.1.285 print mode can default to auto mode, which would run them), no
+ * MCP servers or skills (~60K tokens of definitions per call otherwise), a
+ * one-line system prompt, and no transcript on disk (the run would otherwise
+ * show up in the fleet as an agent). `--tools` is variadic, so it must be
+ * followed by another flag — the prompt goes on stdin, never as a positional.
+ */
+const LEAN_FLAGS = [
+  "--tools",
+  "",
+  "--strict-mcp-config",
+  "--disable-slash-commands",
+  "--no-session-persistence",
+  "--system-prompt",
+  "You are a precise judge inside a VS Code extension. Follow the user's instructions and output format exactly.",
+];
+
+/**
  * Run Claude Code headlessly (`claude -p --output-format json`) with the prompt
  * piped on stdin (avoids arg-length limits). Returns the model's final text.
  *
  * NOTE: this consumes the user's Claude subscription usage — callers must gate
  * it behind explicit consent (see features/consent.ts).
  */
-export function runClaude(prompt: string, opts: LlmOptions): Promise<string> {
+export async function runClaude(prompt: string, opts: LlmOptions): Promise<string> {
+  const lean = versionAtLeast(await claudeVersion(opts.claudePath), LEAN_HELPER_MIN_VERSION);
   return new Promise((resolve, reject) => {
     const child = spawn(
       opts.claudePath,
-      ["-p", "--output-format", "json", "--model", opts.model],
+      ["-p", ...(lean ? LEAN_FLAGS : []), "--output-format", "json", "--model", opts.model],
       { cwd: opts.cwd },
     );
 

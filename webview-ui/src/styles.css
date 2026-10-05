@@ -213,6 +213,16 @@ body {
   white-space: nowrap;
 }
 
+/* A pill that does something (opens the session's pull request). */
+button.status-pill.link {
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--vscode-textLink-foreground, #3794ff) 16%, transparent);
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+button.status-pill.link:hover { text-decoration: underline; }
+
 .src {
   font-size: 11px;
   opacity: 0.55;

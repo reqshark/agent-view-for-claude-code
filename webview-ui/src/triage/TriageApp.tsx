@@ -491,9 +491,20 @@ export function TriageApp() {
 
   if (!state.enabled) {
     return (
-      <div className="t-empty">
-        Triage is off. Turn on <code>mas.triage.enabled</code> to compress your agents' questions
-        into one inbox.
+      <div className="t-off">
+        <div className="t-off-title">Triage is off</div>
+        <p>
+          One inbox for the whole fleet's questions. When several sessions ask the same thing, you see
+          one row; one answer resumes every session waiting on it; and your answers become a decision
+          log that can answer the next session by itself.
+        </p>
+        <p className="t-off-note">
+          Claude judges which questions are the same (you're asked before its first call). Nothing is
+          recorded while Triage is off.
+        </p>
+        <button className="t-btn primary" onClick={() => post({ type: "enable" })}>
+          Turn on Triage
+        </button>
       </div>
     );
   }

@@ -244,6 +244,8 @@ export type ExtToTriage = { type: "state"; state: TriageState };
 export type TriageToExt =
   | { type: "ready" }
   | { type: "refresh" }
+  /** Turn Triage on (it is off by default). */
+  | { type: "enable" }
   | {
       type: "answer";
       clusterId: string;

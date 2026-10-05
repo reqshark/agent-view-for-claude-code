@@ -2,6 +2,8 @@ import * as fs from "fs";
 import { AgentStatus, TokenUsage, emptyTokens, PlanProgress } from "./types";
 import { stripMarkdown } from "./util/markdown";
 import { humanizeTool } from "./util/format";
+import { BilledUsage } from "./pricing";
+import { scanUsage } from "./usage";
 
 /** Lines we treat as conversational turns (others are metadata/snapshots). */
 const TURN_TYPES = new Set(["user", "assistant"]);
@@ -37,6 +39,19 @@ export interface TranscriptSummary {
   label: string;
   /** Claude Code's own self-updating session title, if it has generated one. */
   aiTitle?: string;
+  /** Title set by `/rename` (or `--name` at launch — Claude Code writes both
+   *  as `custom-title`, so callers that passed `--name` must filter their own). */
+  customTitle?: string;
+  /** The session's messaging address (`agent-name` line). */
+  agentName?: string;
+  /** Pull request Claude Code linked to this session (`pr-link` line). */
+  pr?: { number?: number; url: string };
+  /** Latest permission mode the session recorded ("auto", "plan", …). */
+  permissionMode?: string;
+  /** Billed usage per model across the whole transcript (each message once). */
+  usage?: Record<string, BilledUsage>;
+  /** Claude Code's own cost snapshots, summed per process (see usage.ts). */
+  nativeCostUsd?: number;
   status: AgentStatus;
   model?: string;
   gitBranch?: string;
@@ -85,9 +100,23 @@ export function readParsedLines(jsonlPath: string): any[] {
 
 /** True for slash-command / system wrapper messages that aren't a real prompt. */
 function isWrapperText(text: string): boolean {
-  return /^\s*<(local-command-caveat|local-command-stdout|command-message|command-name|command-args|system-reminder|user-prompt-submit-hook)/i.test(
+  return /^\s*<(local-command-caveat|local-command-stdout|command-message|command-name|command-args|system-reminder|user-prompt-submit-hook|task-notification)/i.test(
     text,
   );
+}
+
+/** The summary Claude Code writes as a user line after compacting context —
+ *  a recap of the conversation, not something the human typed. */
+export function isCompactSummary(line: any): boolean {
+  return line?.type === "user" && line.isCompactSummary === true;
+}
+
+/** Short reason from a `system`/`api_error` line ("Overloaded", "Connection dropped (ECONNRESET)"). */
+function apiErrorText(line: any): string {
+  const e = line?.error;
+  const raw =
+    (e && typeof e === "object" && (e.formatted || e.message)) || (typeof e === "string" ? e : "") || "API error";
+  return String(raw).replace(/\s+/g, " ").slice(0, 100);
 }
 
 /** Plaintext of a message's content blocks (exported for the materializer). */
@@ -122,7 +151,7 @@ function thinkingText(content: unknown): string {
     .trim();
 }
 
-/** Roll a TodoWrite todos array up into done/total/current progress. */
+/** Roll a plan (TodoWrite or Task tools — see PlanTracker) up into done/total/current progress. */
 function planFromTodos(todos: any[] | undefined): PlanProgress | undefined {
   if (!Array.isArray(todos) || todos.length === 0) return undefined;
   let done = 0;
@@ -241,11 +270,21 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
   let firstUserText = "";
   let firstAssistantText = "";
   let aiTitle = "";
+  let customTitle = "";
+  let agentName = "";
+  let pr: TranscriptSummary["pr"];
+  let permissionMode: string | undefined;
+  // An API error retry that is still the newest thing in the transcript (the
+  // agent is stuck retrying, e.g. Overloaded / connection reset).
+  let apiRetry: { text: string; attempt: number; max: number; at: number } | undefined;
+  // Claude Code's own "API Error: …" / "You've hit your session limit" message
+  // (an assistant line with isApiErrorMessage, model "<synthetic>") — written
+  // when a call fails for good. Cleared by any later real turn.
+  let apiFailure: { text: string; at: number } | undefined;
   let lastActivity = 0;
   let messageCount = 0;
   let lastAction = "";
   const filesTouched = new Set<string>();
-  let latestTodos: any[] | undefined;
   let lastError: { text: string; at: number } | undefined;
   // Tracks whether the most recent tool result (chronologically) was a failure;
   // a later successful tool flips it back, so we only surface "currently red".
@@ -266,12 +305,47 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
         line.aiTitle || line.title || line.message?.title || contentToText(line.message?.content) || aiTitle;
       continue;
     }
+    // Metadata lines Claude Code re-appends as they change (so the newest wins
+    // and they survive the tail-only read of big transcripts).
+    if (line.type === "custom-title") {
+      if (typeof line.customTitle === "string") customTitle = line.customTitle;
+      continue;
+    }
+    if (line.type === "agent-name") {
+      if (typeof line.agentName === "string") agentName = line.agentName;
+      continue;
+    }
+    if (line.type === "pr-link") {
+      if (typeof line.prUrl === "string" && line.prUrl) {
+        pr = { url: line.prUrl, number: typeof line.prNumber === "number" ? line.prNumber : undefined };
+      }
+      continue;
+    }
+    if (line.type === "permission-mode") {
+      if (typeof line.permissionMode === "string") permissionMode = line.permissionMode;
+      continue;
+    }
+    if (line.type === "system" && line.subtype === "api_error") {
+      apiRetry = {
+        text: apiErrorText(line),
+        attempt: Number(line.retryAttempt) || 0,
+        max: Number(line.maxRetries) || 0,
+        at: ts,
+      };
+      continue;
+    }
     if (!TURN_TYPES.has(line.type)) continue;
     messageCount++;
+    apiRetry = undefined; // a reply got through, or the human moved on
+    if (line.type === "assistant" && line.isApiErrorMessage === true) {
+      const text = contentToText(line.message?.content).replace(/\s+/g, " ").trim();
+      apiFailure = { text: (text || "API error").slice(0, 120), at: ts || lastActivity };
+      continue; // not a real reply: no model, action or text to take from it
+    }
+    apiFailure = undefined;
 
-    if (line.type === "user" && !firstUserText && !line.isSidechain) {
-      const t = contentToText(line.message?.content);
-      if (t && !isWrapperText(t)) firstUserText = t;
+    if (!firstUserText && isHumanPrompt(line)) {
+      firstUserText = contentToText(line.message?.content);
     }
     // A tool result comes back as a user-type line carrying tool_result blocks;
     // is_error marks a failure (non-zero Bash exit, tool exception, …). Track
@@ -306,7 +380,6 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
         for (const b of content) {
           if (b?.type === "tool_use") {
             if (typeof b.id === "string") toolNameById.set(b.id, b.name);
-            if (b.name === "TodoWrite" && Array.isArray(b.input?.todos)) latestTodos = b.input.todos;
             act = humanizeTool(b.name, b.input);
             if (EDIT_TOOLS.has(b.name)) {
               const f = b.input?.file_path || b.input?.path || b.input?.notebook_path;
@@ -329,8 +402,9 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
       if (m?.model) model = m.model;
       const u = m?.usage;
       if (u) {
-        tokens.output += u.output_tokens || 0;
-        // last assistant usage reflects current context window occupancy
+        // Output is summed over the whole file by scanUsage below (each message
+        // once — its content-block lines all repeat the same usage). The last
+        // assistant usage reflects current context window occupancy.
         tokens.input = u.input_tokens || tokens.input;
         tokens.cacheRead = u.cache_read_input_tokens || tokens.cacheRead;
         tokens.cacheCreate = u.cache_creation_input_tokens || tokens.cacheCreate;
@@ -339,14 +413,34 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
   }
 
   const cleanAiTitle = aiTitle ? stripMarkdown(aiTitle).slice(0, 80) : undefined;
+  const cleanCustomTitle = customTitle.trim() ? customTitle.trim().slice(0, 80) : undefined;
   const label =
+    cleanCustomTitle ||
     cleanAiTitle ||
     stripMarkdown(firstUserText || firstAssistantText || "(no prompt yet)").slice(0, 80);
 
-  const plan = planFromTodos(latestTodos);
-  const errReason = errorIsLatestTool ? lastError?.text : undefined;
+  const usage = scanUsage(jsonlPath);
+  if (usage) tokens.output = usage.outputTokens;
+
+  // The plan comes from a whole-file scan: the Task tools build it one call at
+  // a time, so a tail read of a big transcript would see only part of it.
+  const plan = planFromTodos(usage?.plan);
+  let errReason = errorIsLatestTool ? lastError?.text : undefined;
 
   let status = deriveStatus(lines, lastActivity);
+  // Stuck retrying the API: say so instead of a stale "now doing X".
+  if (apiRetry) {
+    const n = apiRetry.max ? ` ${apiRetry.attempt}/${apiRetry.max}` : "";
+    lastAction = `API retry${n}: ${apiRetry.text}`;
+    if (Date.now() - apiRetry.at < RUNNING_WINDOW_MS * 4) status = "running";
+  }
+  // The call failed for good (retries spent, session limit, auth): that is the
+  // session's error until something else happens.
+  if (apiFailure) {
+    errReason = apiFailure.text;
+    lastError = apiFailure;
+    lastAction = apiFailure.text;
+  }
   // If the most recent tool ended in failure and the agent has since gone quiet
   // (no recovery, no further work), surface that as an explicit error — this is
   // the actionable "it stopped on a red test" case. A still-working agent keeps
@@ -363,6 +457,12 @@ export function parseTranscript(jsonlPath: string): TranscriptSummary | null {
   return {
     label,
     aiTitle: cleanAiTitle,
+    customTitle: cleanCustomTitle,
+    agentName: agentName || undefined,
+    pr,
+    permissionMode,
+    usage: usage?.byModel,
+    nativeCostUsd: usage?.nativeCostUsd,
     status,
     model,
     gitBranch,
@@ -435,15 +535,15 @@ function stripCharForTool(name: string): StripChar {
   if (EDIT_TOOLS.has(name)) return "E";
   if (name === "Bash") return "B";
   if (name === "Read") return "R";
-  if (name === "TodoWrite") return "D";
-  if (name === "SendMessage") return "M";
+  if (name === "TodoWrite" || name === "TaskCreate" || name === "TaskUpdate") return "D";
+  if (name === "SendMessage" || name === "SubagentHandback") return "M";
   return "S";
 }
 
 /** True for a user line that is a real human prompt (not meta/result/wrapper,
  *  and not an inter-agent message delivered as a user line). */
 export function isHumanPrompt(line: any): boolean {
-  if (line?.type !== "user" || line.isMeta || line.isSidechain) return false;
+  if (line?.type !== "user" || line.isMeta || line.isSidechain || isCompactSummary(line)) return false;
   const content = line.message?.content;
   if (Array.isArray(content) && content.some((b: any) => b?.type === "tool_result")) return false;
   const text = contentToText(content);
@@ -534,6 +634,11 @@ export function readMessages(jsonlPath: string, limit = 200): FlatMessage[] {
     const ts = tsOf(line);
     const content = line.message?.content;
     if (line.type === "user") {
+      // A compaction recap runs to pages; mark where it happened instead.
+      if (isCompactSummary(line)) {
+        out.push({ role: "tool", tool: "Compacted", text: "Context compacted — earlier turns summarized", ts });
+        continue;
+      }
       const text = contentToText(content);
       if (text) out.push({ role: "user", text, ts });
       continue;

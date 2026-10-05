@@ -14,10 +14,21 @@ export interface AgentSummary {
   sessionId: string;
   label: string;
   status: AgentStatus;
-  statusSource?: "hook" | "jsonl";
+  statusSource?: "hook" | "registry" | "jsonl";
   model?: string;
   gitBranch?: string;
   tokensTotal: number;
+  /** Estimated USD at list prices, including subagents. */
+  costUsd?: number;
+  /** Pull request Claude Code linked to the session. */
+  pr?: { number?: number; url: string };
+  /** Permission mode the session last recorded ("auto", "plan", …). */
+  permissionMode?: string;
+  /** What the session is blocked on, verbatim from Claude Code. */
+  waitingFor?: string;
+  /** Messaging address (SendMessage / ListAgents name). */
+  sessionName?: string;
+  sessionKind?: "interactive" | "background";
   lastActivity: number;
   messageCount: number;
   lastAction?: string;
@@ -153,4 +164,5 @@ export type WebToExt =
   | { type: "landAgent"; sessionId: string }
   | { type: "openPR"; sessionId: string }
   | { type: "copyMerge"; sessionId: string }
-  | { type: "cleanupAgent"; sessionId: string };
+  | { type: "cleanupAgent"; sessionId: string }
+  | { type: "openPullRequest"; sessionId: string };

@@ -13,19 +13,21 @@ VS Code and VS Code-based IDEs (Antigravity, Cursor, Windsurf, …).
 > of Anthropic, PBC, used here only to describe interoperability. You need your own
 > Claude Code installation and Claude subscription to use it.
 
-> Status: v0.9.2 — discovery, worktree spawning, live status, the React detail view,
+> Status: v0.10.0 — discovery, worktree spawning, live status, the React detail view,
 > desktop notifications, ambient "now doing X" status, **Agent Race** (best-of-N),
 > **Fan-out**, **live plan progress**, failure detection, **Review & Land**, a **Teams
 > cockpit**, **Unattended Fleet**, **Evidence Gates**, **Live presence**, a
-> **Fleet Shift Report**, the **Session Board**, the **Scroll**, and the message mesh.
-> New in 0.9.0 — the Attention release: a **Triage** panel sits between Agents and
-> Detail and compresses your whole fleet's questions into the few you actually have
-> to answer. **Claude decides which questions are the same one**, so five sessions
-> asking the same thing five different ways become **one row**; one answer **resumes
-> every session waiting on it**; and your answers become a **decision log** that
-> answers the next session by itself. Optional **Hold** suspends an asking agent
-> (burning no tokens) until you reply in the inbox. Falls back to offline matching
-> if you'd rather it never called a model.
+> **Fleet Shift Report**, the **Session Board**, the **Scroll**, the message mesh, and an
+> opt-in **Triage** inbox that compresses the whole fleet's questions into the few you
+> actually have to answer.
+> New in 0.10.0 — the Native Signals release, caught up with Claude Code 2.1.289:
+> **live status straight from Claude Code's own session state** (no hooks needed, and
+> the exact thing a session is waiting on), **costs that match `/cost`** (current
+> Opus 5.5 / Sonnet 5.5 / Fable 5.1 prices, subagents included), **your `/rename`
+> titles**, **PR and permission-mode chips**, plan progress that works on current
+> models again, and AI helpers that run as **bare text models** — no tools, a few
+> hundred tokens of context per call instead of tens of thousands. Triage is now opt-in:
+> off and collapsed until you turn it on.
 > Expect rough edges; issues and PRs welcome.
 
 ## Install
@@ -55,7 +57,10 @@ one-click spawning of parallel agents in clean worktrees.
 
 ## Features
 
-- **Triage** — the middle panel, between Agents and Detail. Supervising 5-20 sessions,
+- **Triage** (opt-in) — the middle panel, between Agents and Detail. It is **off by
+  default** and starts collapsed: open the panel and click **Turn on Triage**, or run
+  **Agent View: Turn On Triage**; **Turn Off Triage** is in the panel's `...` menu. While
+  off it records and writes nothing. Supervising 5-20 sessions,
   the bottleneck isn't agent capability, it's your attention: every session asks
   independently, and they ask the *same* things (package manager, branch strategy, test
   framework, what's off limits). Triage compresses that:
@@ -74,7 +79,8 @@ one-click spawning of parallel agents in clean worktrees.
     genuinely resolves *that* question before it is used — and the agent is handed your
     answer **verbatim**, so what the Decisions tab shows is exactly what the agent was
     told. Auditable in the **Auto** tab, revocable in **Decisions**, stored as readable
-    JSON in `.agentview/triage/decisions.json`.
+    JSON in VS Code's private workspace storage — or committed with your repo at
+    `.agentview/triage/decisions.json` if you set `mas.triage.storage` to `repo`.
   - **Conservative by construction.** Scope, expiry and revocation are deterministic
     filters the engine owns — the model is never asked to second-guess them, only to
     judge content. Permission asks are never auto-answered from a general decision, file
@@ -107,10 +113,27 @@ one-click spawning of parallel agents in clean worktrees.
   `~/.claude/projects`, showing status (idle / running / thinking / needs-you), model,
   and token/cost, with a React **Detail** view of the transcript. A parent delegating to
   subagents shows **thinking** with a count of its working subagents; older idle agents
-  tuck behind a one-click recency toggle (`mas.recentHours`, default 24h).
-- **Live plan progress** — when an agent keeps a to-do list, its own plan shows as a
+  tuck behind a one-click recency toggle (`mas.recentHours`, default 24h). Titles follow
+  Claude Code's own: a session you `/rename` shows your name for it.
+- **Native signals** — what Claude Code itself records, surfaced on every row:
+  - **The exact ask.** A session blocked on you says what it is waiting on, verbatim from
+    Claude Code's live session state — in the tree, the Detail view, and "Needs you".
+  - **Cost that matches `/cost`.** Every API message is counted once at current list
+    prices (Opus 5.5, Sonnet 5.5, Fable 5.1, Haiku 4.5, with 1-hour cache writes), and a
+    session's subagents are included — the same figure Claude Code shows for a single
+    run, and the one Unattended's budget cap now enforces.
+  - **PR, mode, and kind chips.** `PR #123` when Claude Code linked a pull request (one
+    click opens it), `plan mode` / `accept edits` / `bypass perms` when a session isn't
+    on the default, and `bg` for background sessions.
+  - **API trouble, named.** A session stuck retrying the API says so ("API retry 3/10:
+    Overloaded") instead of showing a stale action, and turns red with Claude Code's own
+    message when a call fails for good (retries spent, session limit hit, signed out).
+- **Live plan progress** — when an agent keeps a plan, it shows as a
   `4/7 · <current step>` chip in the tree, the Detail view, and the Session Board — the
   agent's ground-truth "now doing X", derived from its plan with no extra LLM calls.
+  Reads both `TodoWrite` and the Task tools. Current models (Opus 4.8+, Sonnet 5+, Fable)
+  only get plan tools when `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` is set, so agents Agent View
+  spawns get it by default (`mas.spawn.planTools`); set it yourself for other sessions.
 - **Failure detection (no LLM)** — a red **tests-red / command-failed** chip when an
   agent's most recent tool ends in failure (e.g. `Bash failed: npm test exited 1`),
   read straight from the transcript so it works for external agents too. It feeds the
@@ -153,8 +176,9 @@ one-click spawning of parallel agents in clean worktrees.
   messages and task notifications no longer masquerade as human prompts.
 - **Spawn in isolated worktrees** — one-click **New Agent** creates a fresh git
   worktree + branch so parallel agents never clobber each other's files.
-- **Live status** — Claude Code hooks stream real-time events; transcript replay is
-  the zero-config fallback.
+- **Live status** — Claude Code's own live session state (`~/.claude/sessions/`, the same
+  source as `claude agents`) gives busy / idle / waiting with zero setup; hooks add
+  real-time tool events on top; transcript replay is the fallback for older CLIs.
 - **Ambient "now doing X"** — every agent shows a live one-liner of its current
   action ("Editing auth.ts", "Running: npm test"), derived from hook tool events
   with no extra LLM calls.
@@ -206,6 +230,10 @@ one-click spawning of parallel agents in clean worktrees.
     Runs `claude -p` and uses your Claude subscription.
   - **Merge Advisor** — ranks multiple agents' diffs and recommends which to merge.
     Uses your Claude subscription.
+  - Every helper (and Triage's judge) runs `claude -p` as a bare text model: no tools,
+    no MCP servers or skills, a one-line system prompt, and nothing written to your
+    session history — a few hundred tokens of context per call instead of tens of
+    thousands (MCP tool definitions and skill listings no longer ride along).
 
 ## Architecture
 
@@ -227,8 +255,9 @@ one-click spawning of parallel agents in clean worktrees.
                                                 webview-ui/ (React + Vite)
 ```
 
-The sidebar is three equal thirds: **Agents** (who is running), **Triage** (what needs
-you), **Detail** (what one agent is doing). `src/triage/` holds the pipeline —
+The sidebar is **Agents** (who is running) and **Detail** (what one agent is doing), with
+the opt-in **Triage** (what needs you) between them — collapsed until you turn it on, then
+an equal third. `src/triage/` holds the pipeline —
 normalize, dedup, decision-log lookup, route — plus the on-disk decision log and the
 blocking Hold channel. `judge.ts` is the Claude-backed adjudicator; `text.ts` is the
 offline lexical matcher that shortlists candidates for it and takes over entirely when
@@ -240,7 +269,11 @@ Opt-in AI layer (off by default): `src/features/{router,mergeAdvisor,conflicts}`
 ### Data sources (fidelity order)
 1. **Claude Code hooks** (push, low-latency) — installed into `~/.claude/settings.json`,
    POST events to the local hook server. Drives real-time status.
-2. **Session JSONL transcripts** (pull/replay, zero-config) —
+2. **Claude Code's live session registry** (zero-config, read-only) —
+   `~/.claude/sessions/<pid>.json`, one per running session: busy / idle / waiting and
+   what it waits on. Against hooks, whichever changed most recently wins; entries from
+   dead processes are ignored. Off with `mas.sessionRegistry.enabled`.
+3. **Session JSONL transcripts** (pull/replay, zero-config) —
    `~/.claude/projects/<enc-cwd>/<session-id>.jsonl` plus
    `<session-id>/subagents/**/agent-*.jsonl`. Source of truth + fallback.
 

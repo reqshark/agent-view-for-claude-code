@@ -86,6 +86,26 @@ body {
   opacity: 0.7;
   line-height: 1.5;
 }
+/* Off state: Triage is opt-in, so this is the pitch plus the switch. */
+.t-off {
+  padding: 12px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.t-off-title {
+  font-weight: 600;
+}
+.t-off p {
+  margin: 0;
+  opacity: 0.8;
+}
+.t-off .t-off-note {
+  opacity: 0.6;
+}
 .t-empty code {
   background: var(--vscode-textCodeBlock-background);
   padding: 0 4px;

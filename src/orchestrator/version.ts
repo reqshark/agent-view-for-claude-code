@@ -42,3 +42,7 @@ export function versionAtLeast(v: string | undefined, min: string): boolean {
 /** First CLI version whose sessions accept `--name` (cross-session messaging
  *  GA) — a stable, human-readable address in ListAgents output. */
 export const NAME_FLAG_MIN_VERSION = "2.1.224";
+
+/** CLI version from which the AI helpers run lean (no tools, MCP, skills or
+ *  session file — see llm/runner.ts). All of those flags predate it. */
+export const LEAN_HELPER_MIN_VERSION = "2.1.143";

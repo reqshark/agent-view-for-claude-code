@@ -1,14 +1,9 @@
 import * as vscode from "vscode";
-import { AgentSession, AgentStatus, TokenUsage } from "../types";
+import { AgentSession, AgentStatus } from "../types";
 import { AgentStore } from "../store";
+import { PriceOverrides, priceUsageMap } from "../pricing";
 
-/** $ per 1,000,000 tokens, per usage class. */
-export interface ModelPrice {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-}
+export type { ModelPrice } from "../pricing";
 
 export interface UnattendedConfig {
   enabled: boolean;
@@ -18,7 +13,8 @@ export interface UnattendedConfig {
   maxNudges: number;
   /** Per-agent estimated-cost cap in USD; the agent is paused past it. 0 = off. */
   maxCostUsd: number;
-  pricing: Partial<Record<"opus" | "sonnet" | "haiku", ModelPrice>>;
+  /** Per-family price overrides (mas.unattended.pricing); list prices otherwise. */
+  pricing: PriceOverrides;
 }
 
 /** Side effects the controller drives, wired by the extension host. */
@@ -30,34 +26,17 @@ export interface UnattendedActions {
   notify(message: string): void;
 }
 
-// Published per-million-token prices (Claude API skill, 2026-06): Opus 4.x
-// $5/$25, Sonnet 4.6 $3/$15, Haiku 4.5 $1/$5; cache read ~=0.1x input, cache
-// write ~=1.25x input. Override via mas.unattended.pricing. Estimates only.
-export const DEFAULT_PRICING: Record<"opus" | "sonnet" | "haiku", ModelPrice> = {
-  opus: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  sonnet: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-  haiku: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
-};
-
-function priceFor(model: string | undefined, pricing: UnattendedConfig["pricing"]): ModelPrice {
-  const m = (model || "").toLowerCase();
-  const key = m.includes("opus") ? "opus" : m.includes("haiku") ? "haiku" : "sonnet";
-  return pricing[key] || DEFAULT_PRICING[key];
-}
-
-/** Estimated USD cost of an agent's token usage at the configured prices. */
-export function estimateCostUsd(
-  tokens: TokenUsage,
-  model: string | undefined,
-  pricing: UnattendedConfig["pricing"],
-): number {
-  const p = priceFor(model, pricing);
+/**
+ * Estimated USD for a session and its subagents: every API message's billed
+ * usage (see usage.ts) at list prices, or at the user's per-family overrides.
+ * Matches Claude Code's own /cost at list prices; an estimate only for plans
+ * with negotiated rates.
+ */
+export function estimateCostUsd(a: AgentSession, pricing: PriceOverrides): number {
+  if (Object.keys(pricing).length === 0 && a.costUsd !== undefined) return a.costUsd;
   return (
-    (tokens.input * p.input +
-      tokens.output * p.output +
-      tokens.cacheRead * p.cacheRead +
-      tokens.cacheCreate * p.cacheWrite) /
-    1_000_000
+    priceUsageMap(a.usage, pricing) +
+    (a.subagents || []).reduce((sum, s) => sum + priceUsageMap(s.usage, pricing), 0)
   );
 }
 
@@ -112,7 +91,7 @@ export class UnattendedController {
     let total = 0;
     for (const a of this.store.list()) {
       if (a.kind !== "session" || !a.managed) continue;
-      total += estimateCostUsd(a.tokens, a.model, cfg.pricing);
+      total += estimateCostUsd(a, cfg.pricing);
     }
     return total;
   }
@@ -127,7 +106,7 @@ export class UnattendedController {
 
       // Cost cap — pause once past the per-agent budget.
       if (cfg.maxCostUsd > 0 && !this.paused.has(a.sessionId)) {
-        const cost = estimateCostUsd(a.tokens, a.model, cfg.pricing);
+        const cost = estimateCostUsd(a, cfg.pricing);
         if (cost > cfg.maxCostUsd) {
           this.paused.add(a.sessionId);
           if (isActive(a.status)) this.actions.pause(a.sessionId);

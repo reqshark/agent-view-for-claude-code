@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { AgentSession } from "../types";
 import { AgentStore } from "../store";
 import { EvidenceReport, summarizeChecks } from "../features/evidence";
-import { relativeTime, formatTokens, statusIcon, truncate } from "../util/format";
+import { relativeTime, formatTokens, statusIcon, truncate, permissionModeLabel } from "../util/format";
 
 /** Read-only view of the EvidenceController the tree renders chips from. */
 export interface EvidenceSource {
@@ -10,6 +10,19 @@ export interface EvidenceSource {
   isRunning(sessionId: string): boolean;
   onDidChange: vscode.Event<void>;
 }
+
+const SOURCE_LABEL: Record<NonNullable<AgentSession["statusSource"]>, string> = {
+  hook: "live, from hooks",
+  registry: "live, from Claude Code",
+  jsonl: "inferred from transcript",
+};
+
+const ENTRYPOINT_LABEL: Record<string, string> = {
+  cli: "terminal",
+  "claude-vscode": "Claude Code for VS Code",
+  "sdk-cli": "headless (claude -p / SDK)",
+  "claude-desktop": "Claude desktop app",
+};
 
 export class AgentsProvider implements vscode.TreeDataProvider<AgentSession> {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
@@ -57,7 +70,10 @@ export class AgentsProvider implements vscode.TreeDataProvider<AgentSession> {
 
     const bits: string[] = [];
     if (agent.groupRole) bits.push(agent.groupRole === "race" ? "race" : "batch");
+    if (agent.sessionKind === "background") bits.push("bg");
     if (dismissed) bits.push("dismissed");
+    // The exact ask, straight from Claude Code's session state.
+    if (needsYou && agent.status === "waiting" && agent.waitingFor) bits.push(truncate(agent.waitingFor, 60));
     // A current tool failure is the most important thing to see at a glance.
     if (agent.lastError) bits.push(truncate(agent.lastError, 60));
     if (agent.kind === "subagent" && agent.agentType) bits.push(agent.agentType);
@@ -74,6 +90,9 @@ export class AgentsProvider implements vscode.TreeDataProvider<AgentSession> {
         bits.push(s.ok ? "checks ✓" : `checks ${s.passed}/${s.total} ✗`);
       }
     }
+    const mode = permissionModeLabel(agent.permissionMode);
+    if (mode) bits.push(mode);
+    if (agent.pr) bits.push(agent.pr.number ? `PR #${agent.pr.number}` : "PR");
     if (agent.managed) bits.push("⎇ " + (agent.gitBranch || "worktree"));
     if (activeSubs > 0) bits.push(`${activeSubs} subagent${activeSubs === 1 ? "" : "s"} working`);
     bits.push(relativeTime(agent.lastActivity));
@@ -108,7 +127,8 @@ export class AgentsProvider implements vscode.TreeDataProvider<AgentSession> {
   private tooltip(agent: AgentSession): vscode.MarkdownString {
     const md = new vscode.MarkdownString();
     md.appendMarkdown(`**${agent.label}**\n\n`);
-    md.appendMarkdown(`- Status: \`${agent.status}\`${agent.statusSource ? ` (${agent.statusSource})` : ""}\n`);
+    md.appendMarkdown(`- Status: \`${agent.status}\`${agent.statusSource ? ` (${SOURCE_LABEL[agent.statusSource]})` : ""}\n`);
+    if (agent.waitingFor) md.appendMarkdown(`- Waiting on: ${truncate(agent.waitingFor, 200)}\n`);
     if (agent.acknowledged) md.appendMarkdown(`- Dismissed from "needs you" — resurfaces on new activity\n`);
     const now = agent.liveAction || agent.lastAction;
     if (now) md.appendMarkdown(`- Now: ${truncate(now, 200)}\n`);
@@ -126,7 +146,19 @@ export class AgentsProvider implements vscode.TreeDataProvider<AgentSession> {
     if (agent.groupRole) md.appendMarkdown(`- Group: \`${agent.groupRole}\`\n`);
     if (agent.agentType) md.appendMarkdown(`- Type: \`${agent.agentType}\`\n`);
     if (agent.model) md.appendMarkdown(`- Model: \`${agent.model}\`\n`);
+    if (agent.permissionMode) md.appendMarkdown(`- Permission mode: \`${agent.permissionMode}\`\n`);
     md.appendMarkdown(`- Tokens: ${formatTokens(agent.tokens)}\n`);
+    if (agent.costUsd) {
+      const subs = agent.kind === "session" && (agent.subagents?.length || 0) > 0 ? ", incl. subagents" : "";
+      md.appendMarkdown(`- Cost: ~$${agent.costUsd.toFixed(2)} at list prices${subs}\n`);
+    }
+    if (agent.pr && /^https:\/\//i.test(agent.pr.url)) {
+      md.appendMarkdown(`- Pull request: [${agent.pr.number ? "#" + agent.pr.number : "open"}](${agent.pr.url})\n`);
+    }
+    if (agent.sessionName) md.appendMarkdown(`- Address: \`@${agent.sessionName}\`\n`);
+    if (agent.entrypoint) {
+      md.appendMarkdown(`- Runs in: ${ENTRYPOINT_LABEL[agent.entrypoint] || agent.entrypoint}${agent.sessionKind === "background" ? " (background)" : ""}\n`);
+    }
     if (agent.cwd) md.appendMarkdown(`- Cwd: \`${agent.cwd}\`\n`);
     if (agent.gitBranch) md.appendMarkdown(`- Branch: \`${agent.gitBranch}\`\n`);
     md.appendMarkdown(`- Session: \`${agent.sessionId}\`\n`);

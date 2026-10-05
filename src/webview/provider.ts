@@ -34,6 +34,12 @@ function toSummary(a: AgentSession): AgentSummary {
     agentType: a.agentType,
     groupId: a.groupId,
     groupRole: a.groupRole,
+    costUsd: a.costUsd,
+    pr: a.pr,
+    permissionMode: a.permissionMode,
+    waitingFor: a.waitingFor,
+    sessionName: a.sessionName,
+    sessionKind: a.sessionKind,
     activeSubagents: (a.subagents || []).filter(
       (s) => s.status === "running" || s.status === "waiting" || s.status === "thinking",
     ).length,
@@ -168,6 +174,12 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
         case "cleanupAgent":
           this.handlers.cleanupAgent(msg.sessionId);
           break;
+        case "openPullRequest": {
+          // Resolve the URL host-side so the webview can't open arbitrary links.
+          const url = this.store.getById(msg.sessionId)?.pr?.url;
+          if (url && /^https:\/\//i.test(url)) void vscode.env.openExternal(vscode.Uri.parse(url));
+          break;
+        }
       }
     });
 

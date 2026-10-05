@@ -53,3 +53,20 @@ export function Dot({ status }: { status: AgentStatus }) {
     />
   );
 }
+
+/** Chip for a permission mode worth noticing (mirrors util/format.ts on the
+ *  host): "auto" is every session's default since Claude Code 2.1.284. */
+export function permissionModeLabel(mode: string | undefined): string | undefined {
+  switch (mode) {
+    case "plan":
+      return "plan mode";
+    case "acceptEdits":
+      return "accept edits";
+    case "bypassPermissions":
+      return "bypass perms";
+    case "dontAsk":
+      return "don't ask";
+    default:
+      return undefined;
+  }
+}

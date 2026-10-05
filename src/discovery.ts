@@ -4,21 +4,29 @@ import { AgentSession, emptyTokens } from "./types";
 import { parseTranscript, TranscriptSummary } from "./transcript";
 import { findSubagents } from "./subagents";
 import { projectsDir } from "./paths";
+import { priceUsageMap } from "./pricing";
+import { pruneUsageCache } from "./usage";
+import { isSpawnName } from "./orchestrator/naming";
 
 export interface ManagedInfo {
   worktreePath?: string;
   label?: string;
   groupId?: string;
   groupRole?: "race" | "fanout";
+  /** The `--name` MAS launched the agent with (not a user rename). */
+  spawnName?: string;
 }
 
 /**
- * Choose the tree label for a session. Claude Code's own evolving title wins
- * when present (even over a MAS spawn label, so the title tracks the work) —
- * except race agents share one prompt, so we keep their `Race N ·` prefix to
- * stop their titles from collapsing into one another.
+ * Choose the tree label for a session. A title the user gave it (`/rename`)
+ * wins outright. Otherwise Claude Code's own evolving title wins when present
+ * (even over a MAS spawn label, so the title tracks the work) — except race
+ * agents share one prompt, so we keep their `Race N ·` prefix to stop their
+ * titles from collapsing into one another.
  */
 function composeLabel(summary: TranscriptSummary, managed?: ManagedInfo): string {
+  const custom = summary.customTitle;
+  if (custom && !isSpawnName(custom, managed?.spawnName)) return custom;
   const native = summary.aiTitle;
   if (!native) return managed?.label || summary.label;
   if (managed?.groupRole === "race" && managed.label) {
@@ -106,7 +114,20 @@ export function discoverAgents(opts: DiscoverOptions): AgentSession[] {
         kind: "session",
         statusSource: "jsonl",
         subagents: findSubagents(projectAbsDir, pd.name, sessionId),
+        usage: summary.usage,
+        pr: summary.pr,
+        permissionMode: summary.permissionMode,
+        sessionName: summary.agentName,
       };
+      // Subagent usage lives in their own transcripts (no message overlaps the
+      // parent's), and Claude Code's own /cost counts it — so the session does.
+      // Claude Code's own snapshots also see calls no transcript records (the
+      // auto-mode classifier, compaction); both figures are lower bounds, so
+      // the larger is the better estimate.
+      const fromTranscripts =
+        priceUsageMap(session.usage) +
+        (session.subagents || []).reduce((sum, s) => sum + (s.costUsd || 0), 0);
+      session.costUsd = Math.max(fromTranscripts, summary.nativeCostUsd || 0);
 
       // A parent often goes quiet while its subagents do the work — reflect that
       // it's still effectively thinking (delegating) rather than idle/done.
@@ -125,5 +146,11 @@ export function discoverAgents(opts: DiscoverOptions): AgentSession[] {
   }
 
   sessions.sort((a, b) => b.lastActivity - a.lastActivity);
+  const live = new Set<string>();
+  for (const s of sessions) {
+    live.add(s.jsonlPath);
+    for (const sub of s.subagents || []) live.add(sub.jsonlPath);
+  }
+  pruneUsageCache(live);
   return sessions;
 }

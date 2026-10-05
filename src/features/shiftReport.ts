@@ -71,7 +71,7 @@ export async function buildShiftRows(
         status: a.status,
         branch: a.gitBranch,
         plan: a.plan && a.plan.total > 0 ? { done: a.plan.done, total: a.plan.total } : undefined,
-        costUsd: estimateCostUsd(a.tokens, a.model, pricing),
+        costUsd: estimateCostUsd(a, pricing),
         tokensTotal: a.tokens.input + a.tokens.output + a.tokens.cacheRead + a.tokens.cacheCreate,
         diff: await deps.diffStat(a.sessionId).catch(() => undefined),
         evidence: deps.evidence(a.sessionId),
