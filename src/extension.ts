@@ -58,7 +58,7 @@ import {
 import { PresenceTracker } from "./features/presence";
 import { buildShiftRows, formatShiftReport, narrateShift } from "./features/shiftReport";
 import { parseChecklist } from "./util/checklist";
-import { humanizeTool, truncate } from "./util/format";
+import { humanizeTool, relativeTime, statusIcon, truncate } from "./util/format";
 import { AgentSession } from "./types";
 
 function cfg() {
@@ -625,6 +625,14 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showWarningMessage("Agent View: pick a session in the Agents list first.");
     }
     return id;
+  }
+
+  /** Opens a session's own Claude Code tab through the extension's link
+   *  handler, the same link its session picker uses. */
+  function openClaudeTab(sessionId: string): void {
+    void vscode.env.openExternal(
+      vscode.Uri.parse(`vscode://anthropic.claude-code/open?session=${sessionId}`),
+    );
   }
 
   function clockOf(iso: string): string {
@@ -1451,7 +1459,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Keeps a one-line fleet summary in the status bar even when the panel is
   // closed, and turns the warning color on the moment any agent needs you.
   const pulse = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  pulse.command = "mas.focusTopAttention";
+  pulse.command = "mas.fleetPick";
   context.subscriptions.push(pulse);
 
   function topAttention(): AgentSession | undefined {
@@ -1496,7 +1504,7 @@ export function activate(context: vscode.ExtensionContext): void {
     pulse.text = `$(pulse) ${segs.length ? segs.join(" · ") : "agents idle"}`;
     pulse.tooltip =
       `Agent View — ${sessions.length} session${sessions.length === 1 ? "" : "s"}` +
-      (needsYou ? "\nClick to jump to the agent that needs you." : "\nClick to open the active agent.");
+      "\nClick to see who needs you and who is running.";
     pulse.backgroundColor = needsYou
       ? new vscode.ThemeColor("statusBarItem.warningBackground")
       : undefined;
@@ -1608,6 +1616,75 @@ export function activate(context: vscode.ExtensionContext): void {
       void exportDecisions().catch(reportErr),
     ),
     vscode.commands.registerCommand("mas.toggleOlderAgents", () => store.setShowOlder(!store.showingOlder)),
+
+    // The fleet picker behind the status bar summary: who needs you first,
+    // then who is running, then the rest; each row says what the session
+    // waits on or last did, and when. Enter selects it in the Detail view
+    // (transcript and dialogue box); the ↗ button opens its Claude Code tab.
+    vscode.commands.registerCommand("mas.fleetPick", () => {
+      const rank = (a: AgentSession): number =>
+        (a.status === "waiting" || a.status === "error") && !a.acknowledged
+          ? 0
+          : a.status === "running" || a.status === "thinking"
+            ? 1
+            : a.status === "idle"
+              ? 2
+              : 3;
+      const word = (a: AgentSession): string =>
+        a.status === "waiting"
+          ? "waiting for you"
+          : a.status === "error"
+            ? "error"
+            : a.status === "thinking"
+              ? "thinking"
+              : a.status;
+      const sessions = store
+        .list()
+        .filter((a) => a.kind === "session")
+        .sort((x, y) => rank(x) - rank(y) || y.lastActivity - x.lastActivity);
+      if (sessions.length === 0) {
+        vscode.window.showInformationMessage("Agent View: no sessions in the window it watches.");
+        return;
+      }
+      type Row = vscode.QuickPickItem & { id?: string };
+      const heads = ["Needs you", "Running", "Idle", "Done"];
+      const items: Row[] = [];
+      let last = -1;
+      for (const a of sessions) {
+        const r = rank(a);
+        if (r !== last) {
+          items.push({ label: heads[r], kind: vscode.QuickPickItemKind.Separator });
+          last = r;
+        }
+        const did = a.liveAction || a.lastAction || "";
+        items.push({
+          id: a.sessionId,
+          label: `$(${statusIcon(a.status).id}) ${a.label}`,
+          description: word(a) + (a.waitingFor ? ` · ${truncate(a.waitingFor, 80)}` : ""),
+          detail: (did ? truncate(did, 90) + " · " : "") + relativeTime(a.lastActivity),
+          buttons: [{ iconPath: new vscode.ThemeIcon("link-external"), tooltip: "Open its Claude Code tab" }],
+        });
+      }
+      const qp = vscode.window.createQuickPick<Row>();
+      qp.items = items;
+      qp.title = "Agent View — sessions";
+      qp.placeholder = "Enter selects it in Agent View; ↗ opens its Claude Code tab";
+      qp.matchOnDescription = true;
+      qp.matchOnDetail = true;
+      qp.onDidTriggerItemButton((e) => {
+        if (e.item.id) openClaudeTab(e.item.id);
+      });
+      qp.onDidAccept(() => {
+        const it = qp.selectedItems[0];
+        if (it?.id) {
+          vscode.commands.executeCommand("mas.detail.focus");
+          detail.select(it.id);
+        }
+        qp.hide();
+      });
+      qp.onDidHide(() => qp.dispose());
+      qp.show();
+    }),
 
     vscode.commands.registerCommand("mas.focusTopAttention", () => {
       const a = topAttention();
