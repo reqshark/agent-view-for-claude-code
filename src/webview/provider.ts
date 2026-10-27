@@ -289,6 +289,18 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
     this.post({ type: "composed", sessionId, ok, note });
   }
 
+  /** The session the Detail view shows, if any. */
+  get selectedId(): string | null {
+    return this.selected;
+  }
+
+  /** Puts text into the dialogue box's draft for a session and shows the
+   *  view, so the person can add words and send. */
+  draft(sessionId: string, text: string): void {
+    this.view?.show(false);
+    this.post({ type: "draft", sessionId, text });
+  }
+
   private postTranscript(sessionId: string): void {
     const agent = this.store.getById(sessionId);
     if (!agent) return;

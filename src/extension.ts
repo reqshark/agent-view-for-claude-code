@@ -596,6 +596,37 @@ export function activate(context: vscode.ExtensionContext): void {
     followOutbox(sessionId, at);
   }
 
+  /** The editor's selection as a reference the session can read: the
+   *  workspace-relative path with the line range, Claude Code's own
+   *  @file#L10-L20 spelling, then the lines themselves in a fence, since a
+   *  prompt the plugin submits is not expanded the way a typed @mention is.
+   *  With nothing selected, the path and the cursor's line alone. */
+  function selectionReference(): string | null {
+    const ed = vscode.window.activeTextEditor;
+    if (!ed) {
+      vscode.window.showWarningMessage("Agent View: open a file and select some lines first.");
+      return null;
+    }
+    const doc = ed.document;
+    const rel = vscode.workspace.asRelativePath(doc.uri, false);
+    const sel = ed.selection;
+    if (sel.isEmpty) return `@${rel}#L${sel.active.line + 1}`;
+    const start = sel.start.line + 1;
+    const end = sel.end.character === 0 && sel.end.line > sel.start.line ? sel.end.line : sel.end.line + 1;
+    const code = doc.getText(sel).replace(/\n$/, "");
+    const fence = code.includes("```") ? "````" : "```";
+    return `@${rel}#L${start}-L${end}\n${fence}${doc.languageId}\n${code}\n${fence}`;
+  }
+
+  /** The session the Detail view shows, or a warning and null. */
+  function targetSession(): string | null {
+    const id = detail.selectedId;
+    if (!id) {
+      vscode.window.showWarningMessage("Agent View: pick a session in the Agents list first.");
+    }
+    return id;
+  }
+
   function clockOf(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   }
@@ -1739,6 +1770,20 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("mas.unattendedOn", () => setUnattended(true)),
     vscode.commands.registerCommand("mas.unattendedOff", () => setUnattended(false)),
+
+    vscode.commands.registerCommand("mas.sendSelection", () => {
+      const ref = selectionReference();
+      if (!ref) return;
+      const id = targetSession();
+      if (id) detail.draft(id, ref);
+    }),
+
+    vscode.commands.registerCommand("mas.sendSelectionNow", () => {
+      const ref = selectionReference();
+      if (!ref) return;
+      const id = targetSession();
+      if (id) compose(id, ref);
+    }),
 
     vscode.commands.registerCommand("mas.fanOutSelection", () => {
       const ed = vscode.window.activeTextEditor;

@@ -135,7 +135,9 @@ export type ExtToWeb =
   | { type: "race"; group: RaceGroup | null }
   | { type: "review"; queue: ReviewQueue }
   /** The dialogue box's receipt: whether the text was queued, and a note. */
-  | { type: "composed"; sessionId: string; ok: boolean; note: string };
+  | { type: "composed"; sessionId: string; ok: boolean; note: string }
+  /** Text for the dialogue box's draft of a session (an editor selection). */
+  | { type: "draft"; sessionId: string; text: string };
 
 export type WebToExt =
   | { type: "ready" }

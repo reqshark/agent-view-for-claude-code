@@ -64,6 +64,7 @@ export function App() {
     if (selected) setDrafts((d) => ({ ...d, [selected]: text }));
   };
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composeRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const onMsg = (e: MessageEvent<ExtToWeb>) => {
@@ -82,6 +83,14 @@ export function App() {
         setRouter(msg.router);
       }
       else if (msg.type === "composed") setComposeNote(msg.note);
+      else if (msg.type === "draft") {
+        // An editor selection joins the session's draft; the box takes focus.
+        setDrafts((d) => {
+          const had = d[msg.sessionId] || "";
+          return { ...d, [msg.sessionId]: (had ? had.replace(/\n*$/, "\n") : "") + msg.text + "\n" };
+        });
+        setTimeout(() => composeRef.current?.focus(), 0);
+      }
     };
     window.addEventListener("message", onMsg);
     post({ type: "ready" });
@@ -375,6 +384,7 @@ export function App() {
           {focused && focused.kind === "session" && (
             <div className="compose">
               <textarea
+                ref={composeRef}
                 className="compose-box"
                 placeholder="Message this session — Enter sends, Shift+Enter for a new line"
                 value={composeText}

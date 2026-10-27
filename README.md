@@ -235,6 +235,22 @@ one-click spawning of parallel agents in clean worktrees.
     session history — a few hundred tokens of context per call instead of tens of
     thousands (MCP tool definitions and skill listings no longer ride along).
 
+## Dialogue box (this fork)
+
+Under the Detail transcript sits a box that writes to the selected session
+as your own prompt, without the Claude Code chat: Enter sends,
+Shift+Enter breaks a line, and a receipt under it says when the text was
+queued, then that the session answered or that the engine dropped it.
+It works through the `workflow-pane` Claude Code plugin: the extension
+appends the text to `<config dir>/workflow-pane-inbox/<session>.jsonl`
+and the plugin running in that session submits it once the session is
+idle, so it reaches an extension-hosted session with no terminal; each
+turn's answer goes to `workflow-pane-outbox/<session>.jsonl`. From the
+editor, **Ctrl+Alt+Enter** puts the selection (as `@file#L10-L20` and the
+lines themselves) into the box's draft for the selected session, and
+**Ctrl+Alt+Shift+Enter** sends it at once; both are in the editor's
+right-click menu.
+
 ## Architecture
 
 ```
