@@ -26,6 +26,7 @@ import {
 } from "./orchestrator/worktree";
 import * as fs from "fs";
 import * as path from "path";
+import { claudeHome } from "./paths";
 import { execFile } from "child_process";
 import { BaseContentProvider, openReviewDiff, BASE_SCHEME, DiffResolver } from "./review/diff";
 import { ReviewStore } from "./review/store";
@@ -542,6 +543,28 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  /** The dialogue box: queue text for a session as the person's own prompt.
+   *  The line goes to the session's inbox under ~/.claude, where the
+   *  workflow-pane Claude Code plugin running in that session submits it once
+   *  the session is idle — so it reaches an extension-hosted session, which
+   *  has no terminal to type into. The reply shows in the Detail transcript. */
+  function compose(sessionId: string, text: string): void {
+    const body = (text || "").trim();
+    if (!body) return;
+    const dir = path.join(claudeHome(), "workflow-pane-inbox");
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const at = new Date().toISOString();
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(file, JSON.stringify({ at, text: body }) + "\n");
+    } catch (e: any) {
+      detail.composed(sessionId, false, `could not write ${file}: ${e.message}`);
+      return;
+    }
+    const clock = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    detail.composed(sessionId, true, `queued ${clock} · the session takes it when idle`);
+  }
+
   async function copyMerge(sessionId: string): Promise<void> {
     const m = registry.get(sessionId);
     if (!m) return;
@@ -1005,6 +1028,13 @@ export function activate(context: vscode.ExtensionContext): void {
     requestChanges: (id, c) => {
       try {
         requestChanges(id, c);
+      } catch (e) {
+        reportErr(e);
+      }
+    },
+    compose: (id, t) => {
+      try {
+        compose(id, t);
       } catch (e) {
         reportErr(e);
       }

@@ -133,7 +133,9 @@ export type ExtToWeb =
   | { type: "insights"; conflicts: Conflict[]; router: RouterItem[] }
   | { type: "view"; view: ViewMode }
   | { type: "race"; group: RaceGroup | null }
-  | { type: "review"; queue: ReviewQueue };
+  | { type: "review"; queue: ReviewQueue }
+  /** The dialogue box's receipt: whether the text was queued, and a note. */
+  | { type: "composed"; sessionId: string; ok: boolean; note: string };
 
 export type WebToExt =
   | { type: "ready" }
@@ -152,6 +154,8 @@ export type WebToExt =
   | { type: "refreshReview" }
   | { type: "openReviewDiff"; sessionId: string }
   | { type: "requestChanges"; sessionId: string; comment: string }
+  /** The dialogue box: text for the session, as the person's own prompt. */
+  | { type: "compose"; sessionId: string; text: string }
   | { type: "landAgent"; sessionId: string }
   | { type: "openPR"; sessionId: string }
   | { type: "copyMerge"; sessionId: string }

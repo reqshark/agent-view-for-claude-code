@@ -56,6 +56,8 @@ export function App() {
   const [race, setRace] = useState<RaceGroup | null>(null);
   const [review, setReview] = useState<ReviewQueue | null>(null);
   const [fanoutText, setFanoutText] = useState("");
+  const [composeText, setComposeText] = useState("");
+  const [composeNote, setComposeNote] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -74,6 +76,7 @@ export function App() {
         setConflicts(msg.conflicts);
         setRouter(msg.router);
       }
+      else if (msg.type === "composed") setComposeNote(msg.note);
     };
     window.addEventListener("message", onMsg);
     post({ type: "ready" });
@@ -95,7 +98,19 @@ export function App() {
 
   const select = (id: string) => {
     setSelected(id);
+    setComposeNote("");
     post({ type: "select", sessionId: id });
+  };
+
+  // The dialogue box: the text goes to the session's inbox, and the
+  // workflow-pane plugin in that session submits it as the person's own
+  // prompt once the session is idle; the reply shows in the transcript.
+  const compose = () => {
+    const text = composeText.trim();
+    if (!text || !selected) return;
+    post({ type: "compose", sessionId: selected, text });
+    setComposeText("");
+    setComposeNote("sending…");
   };
 
   const switchView = (v: ViewMode) => {
@@ -349,6 +364,29 @@ export function App() {
                   </div>
                 ),
               )}
+            </div>
+          )}
+
+          {focused && (
+            <div className="compose">
+              <textarea
+                className="compose-box"
+                placeholder="Message this session — Enter sends, Shift+Enter for a new line"
+                value={composeText}
+                onChange={(e) => setComposeText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    compose();
+                  }
+                }}
+              />
+              <div className="compose-actions">
+                <button className="btn tiny" disabled={!composeText.trim()} onClick={compose}>
+                  Send
+                </button>
+                <span className="compose-note">{composeNote}</span>
+              </div>
             </div>
           )}
         </>

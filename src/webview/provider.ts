@@ -71,6 +71,7 @@ export interface WebviewHandlers {
   buildReviewQueue(): Promise<ReviewQueue>;
   openReviewDiff(sessionId: string): void;
   requestChanges(sessionId: string, comment: string): void;
+  compose(sessionId: string, text: string): void;
   landAgent(sessionId: string): void;
   openPR(sessionId: string): void;
   copyMerge(sessionId: string): void;
@@ -161,6 +162,9 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
           break;
         case "requestChanges":
           this.handlers.requestChanges(msg.sessionId, msg.comment);
+          break;
+        case "compose":
+          this.handlers.compose(msg.sessionId, msg.text);
           break;
         case "landAgent":
           this.handlers.landAgent(msg.sessionId);
@@ -278,6 +282,11 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
 
   private postInsights(): void {
     this.post({ type: "insights", conflicts: this.insights.conflicts, router: this.insights.router });
+  }
+
+  /** The dialogue box's receipt: whether the text was queued, and a note. */
+  composed(sessionId: string, ok: boolean, note: string): void {
+    this.post({ type: "composed", sessionId, ok, note });
   }
 
   private postTranscript(sessionId: string): void {
