@@ -551,18 +551,92 @@ export function activate(context: vscode.ExtensionContext): void {
   function compose(sessionId: string, text: string): void {
     const body = (text || "").trim();
     if (!body) return;
+    const a = store.getById(sessionId);
+    if (!a || a.kind !== "session") {
+      detail.composed(sessionId, false, "only a session takes a message — pick its row, not a subagent's");
+      return;
+    }
     const dir = path.join(claudeHome(), "workflow-pane-inbox");
     const file = path.join(dir, `${sessionId}.jsonl`);
     const at = new Date().toISOString();
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(file, JSON.stringify({ at, text: body }) + "\n");
+      // The reader cannot read a file past 4 MiB, so past 512 KiB only the
+      // last 50 lines are kept (it keys on stamps, so that loses nothing
+      // it has not taken); a line left without its newline is closed first.
+      let prefix = "";
+      try {
+        const st = fs.statSync(file);
+        if (st.size > 512 * 1024) {
+          const tail = fs.readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-50);
+          fs.writeFileSync(file, tail.join("\n") + "\n");
+        } else if (st.size > 0) {
+          const fd = fs.openSync(file, "r");
+          const last = Buffer.alloc(1);
+          fs.readSync(fd, last, 0, 1, st.size - 1);
+          fs.closeSync(fd);
+          if (last[0] !== 0x0a) prefix = "\n";
+        }
+      } catch {
+        /* no file yet: appendFileSync makes it */
+      }
+      fs.appendFileSync(file, prefix + JSON.stringify({ at, text: body }) + "\n");
     } catch (e: any) {
       detail.composed(sessionId, false, `could not write ${file}: ${e.message}`);
       return;
     }
-    const clock = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    detail.composed(sessionId, true, `queued ${clock} · the session takes it when idle`);
+    const live = ["idle", "running", "thinking", "waiting"].includes(a.status);
+    detail.composed(
+      sessionId,
+      true,
+      live
+        ? `queued ${clockOf(at)} · the session takes it when idle`
+        : `queued ${clockOf(at)} · the session is not running; it takes it when resumed`,
+    );
+    followOutbox(sessionId, at);
+  }
+
+  function clockOf(iso: string): string {
+    return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  /** After a message is queued, the session's outbox (written by the
+   *  workflow-pane plugin) says what became of it: an "answer" note newer
+   *  than the message means the turn it started has finished, a "dropped"
+   *  note means the engine refused the submission. Polled for a minute. */
+  const outboxWatch: Record<string, NodeJS.Timeout> = {};
+  function followOutbox(sessionId: string, sentAt: string): void {
+    const file = path.join(claudeHome(), "workflow-pane-outbox", `${sessionId}.jsonl`);
+    if (outboxWatch[sessionId]) clearTimeout(outboxWatch[sessionId]);
+    const until = Date.now() + 60_000;
+    const look = () => {
+      delete outboxWatch[sessionId];
+      let lines: string[] = [];
+      try {
+        lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+      } catch {
+        /* no outbox yet */
+      }
+      for (const line of lines) {
+        let j: any;
+        try {
+          j = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!j || typeof j.at !== "string" || j.at <= sentAt) continue;
+        if (j.reason === "dropped") {
+          detail.composed(sessionId, false, `dropped: ${String(j.answer || "").slice(0, 160)}`);
+          return;
+        }
+        if (j.reason === "answer") {
+          detail.composed(sessionId, true, `answered ${clockOf(j.at)}`);
+          return;
+        }
+      }
+      if (Date.now() < until) outboxWatch[sessionId] = setTimeout(look, 2000);
+    };
+    outboxWatch[sessionId] = setTimeout(look, 2000);
   }
 
   async function copyMerge(sessionId: string): Promise<void> {

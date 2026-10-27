@@ -56,8 +56,13 @@ export function App() {
   const [race, setRace] = useState<RaceGroup | null>(null);
   const [review, setReview] = useState<ReviewQueue | null>(null);
   const [fanoutText, setFanoutText] = useState("");
-  const [composeText, setComposeText] = useState("");
+  // The dialogue box's drafts, one per session, and the receipt line.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [composeNote, setComposeNote] = useState("");
+  const composeText = selected ? drafts[selected] || "" : "";
+  const setComposeText = (text: string) => {
+    if (selected) setDrafts((d) => ({ ...d, [selected]: text }));
+  };
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -367,7 +372,7 @@ export function App() {
             </div>
           )}
 
-          {focused && (
+          {focused && focused.kind === "session" && (
             <div className="compose">
               <textarea
                 className="compose-box"
@@ -375,7 +380,9 @@ export function App() {
                 value={composeText}
                 onChange={(e) => setComposeText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  // Enter while an input method is still composing a
+                  // candidate commits the candidate, not the message.
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                     e.preventDefault();
                     compose();
                   }
