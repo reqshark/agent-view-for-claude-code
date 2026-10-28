@@ -60,6 +60,11 @@ export function App() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [composeNote, setComposeNote] = useState("");
   const composeText = selected ? drafts[selected] || "" : "";
+  // Files attached to the draft, per session: saved by the extension under
+  // the session's inbox folder, sent as paths the session reads.
+  type Chip = { name: string; path: string };
+  const [attachments, setAttachments] = useState<Record<string, Chip[]>>({});
+  const chips = selected ? attachments[selected] || [] : [];
   const setComposeText = (text: string) => {
     if (selected) setDrafts((d) => ({ ...d, [selected]: text }));
   };
@@ -83,6 +88,15 @@ export function App() {
         setRouter(msg.router);
       }
       else if (msg.type === "composed") setComposeNote(msg.note);
+      else if (msg.type === "attached") {
+        setComposeNote(msg.note);
+        if (msg.ok) {
+          setAttachments((m) => ({
+            ...m,
+            [msg.sessionId]: [...(m[msg.sessionId] || []), { name: msg.name, path: msg.path }],
+          }));
+        }
+      }
       else if (msg.type === "draft") {
         // An editor selection joins the session's draft; the box takes focus.
         setDrafts((d) => {
@@ -121,10 +135,57 @@ export function App() {
   // prompt once the session is idle; the reply shows in the transcript.
   const compose = () => {
     const text = composeText.trim();
-    if (!text || !selected) return;
-    post({ type: "compose", sessionId: selected, text });
+    if (!selected || (!text && chips.length === 0)) return;
+    post({ type: "compose", sessionId: selected, text, files: chips.map((c) => c.path) });
     setComposeText("");
+    setAttachments((m) => ({ ...m, [selected]: [] }));
     setComposeNote("sending…");
+  };
+
+  // A pasted or dropped file goes to the extension as base64; a long text
+  // paste goes as text. Either comes back as a chip once saved.
+  const attachFile = (f: File) => {
+    if (!selected) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result || "");
+      const base64 = url.slice(url.indexOf(",") + 1);
+      post({ type: "attach", sessionId: selected, name: f.name || "pasted", mediaType: f.type || "", base64 });
+    };
+    reader.readAsDataURL(f);
+  };
+  const LONG_PASTE = 1500;
+  const onComposePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!selected) return;
+    const files = Array.from(e.clipboardData.items)
+      .filter((i) => i.kind === "file")
+      .map((i) => i.getAsFile())
+      .filter((f): f is File => !!f);
+    if (files.length) {
+      e.preventDefault();
+      files.forEach(attachFile);
+      setComposeNote("saving…");
+      return;
+    }
+    const text = e.clipboardData.getData("text/plain");
+    if (text && (text.length > LONG_PASTE || text.split("\n").length > 25)) {
+      e.preventDefault();
+      post({ type: "attach", sessionId: selected, name: "pasted.txt", mediaType: "text/plain", text });
+      setComposeNote("saving…");
+    }
+  };
+  const onComposeDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!selected) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (!files.length) return;
+    e.preventDefault();
+    files.forEach(attachFile);
+    setComposeNote("saving…");
+  };
+  const detach = (chip: Chip) => {
+    if (!selected) return;
+    post({ type: "detach", sessionId: selected, path: chip.path });
+    setAttachments((m) => ({ ...m, [selected]: (m[selected] || []).filter((c) => c.path !== chip.path) }));
   };
 
   const switchView = (v: ViewMode) => {
@@ -382,13 +443,26 @@ export function App() {
           )}
 
           {focused && focused.kind === "session" && (
-            <div className="compose">
+            <div className="compose" onDrop={onComposeDrop} onDragOver={(e) => e.preventDefault()}>
+              {chips.length > 0 && (
+                <div className="compose-chips">
+                  {chips.map((c) => (
+                    <span key={c.path} className="chip" title={c.path}>
+                      {c.name}
+                      <button className="chip-x" title="Remove" onClick={() => detach(c)}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <textarea
                 ref={composeRef}
                 className="compose-box"
-                placeholder="Message this session — Enter sends, Shift+Enter for a new line"
+                placeholder="Message this session — Enter sends, Shift+Enter for a new line; paste or drop a file to attach it"
                 value={composeText}
                 onChange={(e) => setComposeText(e.target.value)}
+                onPaste={onComposePaste}
                 onKeyDown={(e) => {
                   // Enter while an input method is still composing a
                   // candidate commits the candidate, not the message.
@@ -399,7 +473,7 @@ export function App() {
                 }}
               />
               <div className="compose-actions">
-                <button className="btn tiny" disabled={!composeText.trim()} onClick={compose}>
+                <button className="btn tiny" disabled={!composeText.trim() && chips.length === 0} onClick={compose}>
                   Send
                 </button>
                 <span className="compose-note">{composeNote}</span>

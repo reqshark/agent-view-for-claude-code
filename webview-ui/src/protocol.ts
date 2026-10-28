@@ -146,7 +146,9 @@ export type ExtToWeb =
   /** The dialogue box's receipt: whether the text was queued, and a note. */
   | { type: "composed"; sessionId: string; ok: boolean; note: string }
   /** Text for the dialogue box's draft of a session (an editor selection). */
-  | { type: "draft"; sessionId: string; text: string };
+  | { type: "draft"; sessionId: string; text: string }
+  /** An attachment saved (or not), with the path the message will carry. */
+  | { type: "attached"; sessionId: string; name: string; path: string; ok: boolean; note: string };
 
 export type WebToExt =
   | { type: "ready" }
@@ -165,8 +167,14 @@ export type WebToExt =
   | { type: "refreshReview" }
   | { type: "openReviewDiff"; sessionId: string }
   | { type: "requestChanges"; sessionId: string; comment: string }
-  /** The dialogue box: text for the session, as the person's own prompt. */
-  | { type: "compose"; sessionId: string; text: string }
+  /** The dialogue box: text for the session, as the person's own prompt,
+   *  with the paths of files attached to it. */
+  | { type: "compose"; sessionId: string; text: string; files?: string[] }
+  /** A pasted or dropped file (bytes as base64) or a long text paste, to be
+   *  saved under the session's inbox folder and attached by path. */
+  | { type: "attach"; sessionId: string; name: string; mediaType: string; base64?: string; text?: string }
+  /** An attachment removed before sending; its file is deleted. */
+  | { type: "detach"; sessionId: string; path: string }
   | { type: "landAgent"; sessionId: string }
   | { type: "openPR"; sessionId: string }
   | { type: "copyMerge"; sessionId: string }

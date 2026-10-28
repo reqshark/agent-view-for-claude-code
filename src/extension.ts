@@ -27,6 +27,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { claudeHome } from "./paths";
+import { contentToText, isHumanPrompt } from "./transcript";
 import { execFile } from "child_process";
 import { BaseContentProvider, openReviewDiff, BASE_SCHEME, DiffResolver } from "./review/diff";
 import { ReviewStore } from "./review/store";
@@ -117,7 +118,7 @@ function sessionIdOf(arg: AgentSession | string | undefined): string | undefined
 export function activate(context: vscode.ExtensionContext): void {
   const registry = new Registry(context.globalState);
   const store = new AgentStore(registry, () => ({
-    recentDays: cfg().get<number>("recentDays", 7),
+    recentDays: cfg().get<number>("recentDays", 14),
     recentHours: cfg().get<number>("recentHours", 24),
     sessionRegistry: cfg().get<boolean>("sessionRegistry.enabled", true),
   }));
@@ -548,9 +549,14 @@ export function activate(context: vscode.ExtensionContext): void {
    *  workflow-pane Claude Code plugin running in that session submits it once
    *  the session is idle — so it reaches an extension-hosted session, which
    *  has no terminal to type into. The reply shows in the Detail transcript. */
-  function compose(sessionId: string, text: string): void {
-    const body = (text || "").trim();
+  function compose(sessionId: string, text: string, files?: string[]): void {
+    let body = (text || "").trim();
+    const attached = (files || []).filter((f) => typeof f === "string" && f.trim());
+    if (!body && attached.length) body = "See the attached file" + (attached.length === 1 ? "." : "s.");
     if (!body) return;
+    if (attached.length) {
+      body += "\n\nAttached (open with the Read tool):\n" + attached.map((f) => `- ${f}`).join("\n");
+    }
     const a = store.getById(sessionId);
     if (!a || a.kind !== "session") {
       detail.composed(sessionId, false, "only a session takes a message — pick its row, not a subagent's");
@@ -633,6 +639,88 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.env.openExternal(
       vscode.Uri.parse(`vscode://anthropic.claude-code/open?session=${sessionId}`),
     );
+  }
+
+  /** Where a session's attachments go: a files folder beside its inbox. */
+  function attachmentDir(sessionId: string): string {
+    return path.join(claudeHome(), "workflow-pane-inbox", sessionId, "files");
+  }
+
+  /** Saves a pasted or dropped file, or a long text paste, under the
+   *  session's inbox folder, and tells the box the path the message will
+   *  carry. The name is kept, cleaned of path separators, behind a stamp. */
+  function attach(sessionId: string, name: string, mediaType: string, base64?: string, text?: string): void {
+    const a = store.getById(sessionId);
+    if (!a || a.kind !== "session") {
+      detail.attached(sessionId, name, "", false, "only a session takes an attachment");
+      return;
+    }
+    const dir = attachmentDir(sessionId);
+    const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
+    const clean = (name || "pasted").replace(/[\/\\]/g, "_").replace(/\s+/g, " ").trim() || "pasted";
+    const file = path.join(dir, `${stamp}-${clean}`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      if (typeof base64 === "string") fs.writeFileSync(file, Buffer.from(base64, "base64"));
+      else fs.writeFileSync(file, text || "", "utf8");
+    } catch (e: any) {
+      detail.attached(sessionId, name, "", false, `could not save ${clean}: ${e.message}`);
+      return;
+    }
+    const kind = mediaType && mediaType.startsWith("image/") ? "image" : text !== undefined ? "text" : "file";
+    detail.attached(sessionId, clean, file, true, `${kind} saved · sent as a path the session reads`);
+  }
+
+  /** Removes an attachment the person took off the message, if it is one
+   *  of this session's own files. */
+  function detach(sessionId: string, file: string): void {
+    const dir = attachmentDir(sessionId);
+    const resolved = path.resolve(file);
+    if (!resolved.startsWith(dir + path.sep)) return;
+    try {
+      fs.unlinkSync(resolved);
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /** The last thing the person typed to a session, read from the tail of
+   *  its transcript (the last 64 KiB), cached by the file's mtime. */
+  const lastPromptCache: Record<string, { mtime: number; text: string }> = {};
+  function lastHumanPrompt(jsonlPath: string): string {
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(jsonlPath);
+    } catch {
+      return "";
+    }
+    const hit = lastPromptCache[jsonlPath];
+    if (hit && hit.mtime === st.mtimeMs) return hit.text;
+    let text = "";
+    try {
+      const span = Math.min(st.size, 64 * 1024);
+      const buf = Buffer.alloc(span);
+      const fd = fs.openSync(jsonlPath, "r");
+      fs.readSync(fd, buf, 0, span, st.size - span);
+      fs.closeSync(fd);
+      const lines = buf.toString("utf8").split("\n");
+      for (let i = lines.length - 1; i >= 0 && !text; i--) {
+        const raw = lines[i];
+        if (!raw || raw.indexOf('"type":"user"') < 0) continue;
+        let line: any;
+        try {
+          line = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        if (!isHumanPrompt(line)) continue;
+        text = contentToText(line.message?.content).replace(/\s+/g, " ").trim();
+      }
+    } catch {
+      text = "";
+    }
+    lastPromptCache[jsonlPath] = { mtime: st.mtimeMs, text };
+    return text;
   }
 
   function clockOf(iso: string): string {
@@ -1111,7 +1199,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Surface how the recency window is filtering the list.
   function updateTreeMessage(): void {
     if (store.showingOlder) {
-      treeView.message = `Showing all agents (last ${cfg().get<number>("recentDays", 7)}d). Toggle to hide older.`;
+      treeView.message = `Showing all agents (last ${cfg().get<number>("recentDays", 14)}d). Toggle to hide older.`;
     } else {
       const hidden = store.hiddenCount();
       treeView.message =
@@ -1145,9 +1233,23 @@ export function activate(context: vscode.ExtensionContext): void {
         reportErr(e);
       }
     },
-    compose: (id, t) => {
+    compose: (id, t, files) => {
       try {
-        compose(id, t);
+        compose(id, t, files);
+      } catch (e) {
+        reportErr(e);
+      }
+    },
+    attach: (id, name, mediaType, base64, text) => {
+      try {
+        attach(id, name, mediaType, base64, text);
+      } catch (e) {
+        reportErr(e);
+      }
+    },
+    detach: (id, file) => {
+      try {
+        detach(id, file);
       } catch (e) {
         reportErr(e);
       }
@@ -1617,19 +1719,27 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("mas.toggleOlderAgents", () => store.setShowOlder(!store.showingOlder)),
 
-    // The fleet picker behind the status bar summary: who needs you first,
-    // then who is running, then the rest; each row says what the session
-    // waits on or last did, and when. Enter selects it in the Detail view
-    // (transcript and dialogue box); the ↗ button opens its Claude Code tab.
+    // The finder behind the status bar summary: who needs you first, then
+    // who is running, then every session the discovery window holds,
+    // grouped by when it last spoke; each row is the session's title over
+    // the last thing the person said to it, with its state and age. Enter
+    // selects it in the Detail view (transcript and dialogue box); the ↗
+    // button opens its Claude Code tab. Typing narrows the list.
     vscode.commands.registerCommand("mas.fleetPick", () => {
+      const now = new Date();
+      const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
       const rank = (a: AgentSession): number =>
         (a.status === "waiting" || a.status === "error") && !a.acknowledged
           ? 0
           : a.status === "running" || a.status === "thinking"
             ? 1
-            : a.status === "idle"
+            : a.lastActivity >= dayStart
               ? 2
-              : 3;
+              : a.lastActivity >= dayStart - 86_400_000
+                ? 3
+                : a.lastActivity >= dayStart - 6 * 86_400_000
+                  ? 4
+                  : 5;
       const word = (a: AgentSession): string =>
         a.status === "waiting"
           ? "waiting for you"
@@ -1647,7 +1757,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       type Row = vscode.QuickPickItem & { id?: string };
-      const heads = ["Needs you", "Running", "Idle", "Done"];
+      const heads = ["Needs you", "Running", "Earlier today", "Yesterday", "This week", "Older"];
       const items: Row[] = [];
       let last = -1;
       for (const a of sessions) {
@@ -1656,12 +1766,12 @@ export function activate(context: vscode.ExtensionContext): void {
           items.push({ label: heads[r], kind: vscode.QuickPickItemKind.Separator });
           last = r;
         }
-        const did = a.liveAction || a.lastAction || "";
+        const said = r <= 1 ? a.liveAction || a.lastAction || "" : lastHumanPrompt(a.jsonlPath);
         items.push({
           id: a.sessionId,
           label: `$(${statusIcon(a.status).id}) ${a.label}`,
           description: word(a) + (a.waitingFor ? ` · ${truncate(a.waitingFor, 80)}` : ""),
-          detail: (did ? truncate(did, 90) + " · " : "") + relativeTime(a.lastActivity),
+          detail: (said ? (r <= 1 ? "" : "you: ") + truncate(said, 110) + " · " : "") + relativeTime(a.lastActivity),
           buttons: [{ iconPath: new vscode.ThemeIcon("link-external"), tooltip: "Open its Claude Code tab" }],
         });
       }

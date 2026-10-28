@@ -71,7 +71,9 @@ export interface WebviewHandlers {
   buildReviewQueue(): Promise<ReviewQueue>;
   openReviewDiff(sessionId: string): void;
   requestChanges(sessionId: string, comment: string): void;
-  compose(sessionId: string, text: string): void;
+  compose(sessionId: string, text: string, files?: string[]): void;
+  attach(sessionId: string, name: string, mediaType: string, base64?: string, text?: string): void;
+  detach(sessionId: string, path: string): void;
   landAgent(sessionId: string): void;
   openPR(sessionId: string): void;
   copyMerge(sessionId: string): void;
@@ -164,7 +166,13 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
           this.handlers.requestChanges(msg.sessionId, msg.comment);
           break;
         case "compose":
-          this.handlers.compose(msg.sessionId, msg.text);
+          this.handlers.compose(msg.sessionId, msg.text, msg.files);
+          break;
+        case "attach":
+          this.handlers.attach(msg.sessionId, msg.name, msg.mediaType, msg.base64, msg.text);
+          break;
+        case "detach":
+          this.handlers.detach(msg.sessionId, msg.path);
           break;
         case "landAgent":
           this.handlers.landAgent(msg.sessionId);
@@ -287,6 +295,11 @@ export class DetailViewProvider implements vscode.WebviewViewProvider {
   /** The dialogue box's receipt: whether the text was queued, and a note. */
   composed(sessionId: string, ok: boolean, note: string): void {
     this.post({ type: "composed", sessionId, ok, note });
+  }
+
+  /** An attachment's receipt: its path, or why it could not be saved. */
+  attached(sessionId: string, name: string, path: string, ok: boolean, note: string): void {
+    this.post({ type: "attached", sessionId, name, path, ok, note });
   }
 
   /** The session the Detail view shows, if any. */
